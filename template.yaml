@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  ChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Timeout: 120
+      MemorySize: 1024
+      Environment:
+        Variables:
+          BEDROCK_REGION: us-east-1
+          BEDROCK_MODEL_ID: amazon.nova-pro-v1:0
+          BROWSER_REGION: ap-southeast-2
+          BROWSER_IDENTIFIER: DirectorGroup-aqScKjlUJn
+          SEARCH_API_PROVIDER: tavily
+          TAVILY_API_KEY: ""
+          SEARCH_RESULT_LIMIT: 3
+          MAX_PAGE_CHARS: 12000
+          MAX_SOURCE_CHARS: 4000
+          REQUEST_TIMEOUT_SECONDS: 12
+          DB_HOST: host.docker.internal
+          DB_PORT: 5433
+          DB_NAME: ecommerce_db
+          DB_USER: ecommerce_user
+          DB_PASSWORD: ecommerce_pass
+          DEFAULT_DAILY_TOKEN_LIMIT: 20000
+          DEFAULT_MONTHLY_TOKEN_LIMIT: 300000
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock-agentcore:StartBrowserSession
+                - bedrock-agentcore:GetBrowserSession
+                - bedrock-agentcore:StopBrowserSession
+              Resource: "*"

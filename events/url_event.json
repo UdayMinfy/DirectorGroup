@@ -1,0 +1,7 @@
+{
+  "user_id": "demo-user-1",
+  "prompt": "Summarize the main takeaways from this page.",
+  "urls": [
+    "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/browser-tool.html"
+  ]
+}
