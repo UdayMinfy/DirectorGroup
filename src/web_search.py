@@ -113,6 +113,10 @@ class WebSearcher:
         if not base:
             return [""]
 
+        # Tavily rejects queries over ~400 characters with a 400 error
+        if len(base) > 400:
+            base = base[:400].rsplit(" ", 1)[0]
+
         queries = [base]
         lowered = base.lower()
 

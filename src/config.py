@@ -56,3 +56,14 @@ DEFAULT_MONTHLY_TOKEN_LIMIT = int(_getenv("DEFAULT_MONTHLY_TOKEN_LIMIT", "0"))
 REQUEST_TOKEN_PRECHECK = int(_getenv("REQUEST_TOKEN_PRECHECK", "0"))
 MODEL_INPUT_COST_PER_1K = float(_getenv("MODEL_INPUT_COST_PER_1K", "0"))
 MODEL_OUTPUT_COST_PER_1K = float(_getenv("MODEL_OUTPUT_COST_PER_1K", "0"))
+BEDROCK_GUARDRAIL_ID = _getenv("BEDROCK_GUARDRAIL_ID","fpg01xq980zy")
+BEDROCK_GUARDRAIL_VERSION = _getenv("BEDROCK_GUARDRAIL_VERSION","1")
+AGENT_GUIDELINES = (
+    "Give responses like chatgpt with emojis\n"
+    "Use short paragraphs\n"
+    "Use simple explanations\n"
+    "Use bullet points only when necessary\n"
+    "Avoid long sections like 'Key Concepts' or 'Main Benefits'\n"
+    "Sound like you're explaining to a developer in a chat\n"
+    "Return plain text only."
+)

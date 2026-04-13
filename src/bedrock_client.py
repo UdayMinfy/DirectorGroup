@@ -6,7 +6,7 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from config import BEDROCK_MODEL_ID, BEDROCK_REGION
+from config import AGENT_GUIDELINES, BEDROCK_GUARDRAIL_ID,  BEDROCK_GUARDRAIL_VERSION, BEDROCK_MODEL_ID, BEDROCK_REGION
 from query_rewriter import build_query_context, parse_resolved_date
 
 
@@ -43,8 +43,8 @@ class BedrockSummarizer:
             self._add_usage(total_usage, usage)
 
         consensus = self._merge_facts(fact_extractions)
-        prompt = self._build_consensus_prompt(user_prompt, consensus, fact_extractions)
-        output_text, usage = self._invoke_text(prompt, "summarize")
+        system_prompt, user_content = self._build_consensus_prompt(user_prompt, consensus, fact_extractions)
+        output_text, usage = self._invoke_text(user_content, "summarize", system_prompt=system_prompt)
         self._add_usage(total_usage, usage)
 
         LOGGER.info("Nova Pro summary generated")
@@ -61,23 +61,35 @@ class BedrockSummarizer:
             "usage": total_usage,
             "consensus": consensus,
             "fact_extractions": fact_extractions,
-            "raw_prompt": prompt,
+            "raw_prompt": f"{system_prompt}\n\n{user_content}",
         }
 
-    def _invoke_text(self, prompt, operation_name):
+    def _invoke_text(self, prompt, operation_name, system_prompt=None):
+        request_params = {
+            "modelId": BEDROCK_MODEL_ID,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"text": prompt}],
+                }
+            ],
+        }
+        if system_prompt:
+            request_params["system"] = [{"text": system_prompt}]
+        if BEDROCK_GUARDRAIL_ID and BEDROCK_GUARDRAIL_VERSION:
+            request_params["guardrailConfig"] = {
+                "guardrailIdentifier": BEDROCK_GUARDRAIL_ID,
+                "guardrailVersion": BEDROCK_GUARDRAIL_VERSION,
+            }
         try:
-            response = self.client.converse(
-                modelId=BEDROCK_MODEL_ID,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [{"text": prompt}],
-                    }
-                ],
-            )
+            response = self.client.converse(**request_params)
         except (ClientError, BotoCoreError) as error:
             LOGGER.exception("Bedrock %s call failed", operation_name)
             raise RuntimeError(f"Bedrock {operation_name} call failed: {error}") from error
+
+        if response.get("stopReason") == "guardrail_intervened":
+            LOGGER.warning("Guardrail blocked %s response", operation_name)
+            raise RuntimeError(f"Guardrail blocked {operation_name} response")
 
         usage = response.get("usage", {})
         return self._extract_text(response), {
@@ -87,7 +99,7 @@ class BedrockSummarizer:
         }
 
     def _extract_source_facts(self, index, user_prompt, source, requested_date):
-        prompt = "\n\n".join(
+        system_prompt = "\n\n".join(
             [
                 "You extract structured facts from a single source for later consensus merging.",
                 "Use only the source provided below.",
@@ -99,6 +111,10 @@ class BedrockSummarizer:
                     '"conflicts": [], "raw_supporting_facts": []}'
                 ),
                 "If a field is unknown, use an empty string or empty list.",
+            ]
+        )
+        user_content = "\n\n".join(
+            [
                 f"User question: {user_prompt}",
                 f"Source index: {index}",
                 f"Title: {source.get('title')}",
@@ -107,7 +123,7 @@ class BedrockSummarizer:
             ]
         )
 
-        output_text, usage = self._invoke_text(prompt, "fact extraction")
+        output_text, usage = self._invoke_text(user_content, "fact extraction", system_prompt=system_prompt)
         parsed = self._parse_json_object(output_text)
 
         if not isinstance(parsed, dict):
@@ -301,7 +317,7 @@ class BedrockSummarizer:
 
     @staticmethod
     def _build_consensus_prompt(user_prompt, consensus, fact_extractions):
-        return "\n\n".join(
+        system_prompt = "\n\n".join(
             [
                 "You are a research assistant.",
                 "Answer only from the merged evidence below.",
@@ -310,11 +326,17 @@ class BedrockSummarizer:
                 "If there are conflicts, mention them briefly instead of silently picking one side.",
                 "Keep the answer clear and helpful.",
                 "End with a Sources section listing only the URLs actually used.",
+                AGENT_GUIDELINES,
+            ]
+        )
+        user_content = "\n\n".join(
+            [
                 f"User question: {user_prompt}",
                 f"Consensus facts: {json.dumps(consensus, ensure_ascii=True)}",
                 f"Per-source extracted facts: {json.dumps(fact_extractions, ensure_ascii=True)}",
             ]
         )
+        return system_prompt, user_content
 
     @staticmethod
     def _extract_text(response):

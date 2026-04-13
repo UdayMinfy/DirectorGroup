@@ -14,7 +14,7 @@ from config import (
 from query_rewriter import build_query_context, rewrite_search_query
 from result_ranker import rerank_websites
 from task_models import ExtractionTask
-from tools import BrowseExtractTool, IntentTool, KnowledgeAnswerTool, SearchWebTool, SummarizeTool
+from tools import BrowseExtractTool, IntentTool, KnowledgeAnswerTool, SearchWebTool, SummarizeTool, clean_response, is_math_expression
 
 
 LOGGER = logging.getLogger(__name__)
@@ -31,6 +31,30 @@ class ResearchAgent:
 
     def run(self, prompt, urls=None, user_id="", session_id=""):
         LOGGER.info("Agent received prompt: %s", prompt)
+
+        # Check if this is a math expression
+        is_math, result = is_math_expression(prompt)
+        if is_math:
+            answer = str(result)
+            self._store_session_turn(user_id, session_id, prompt, answer)
+            return {
+                "prompt": prompt,
+                "answer": clean_response(answer),
+                "model_id": "calculator",
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                "intent": {
+                    "route": "calculator",
+                    "reason": "Detected arithmetic expression",
+                },
+                "consensus": {},
+                "fact_extractions": [],
+                "tasks": [],
+                "sources": [],
+                "user_id": user_id,
+                "session_id": session_id,
+                "history_used": False,
+            }
+
         effective_result_limit = max(SEARCH_RESULT_LIMIT, MIN_SEARCH_RESULTS)
         effective_candidate_limit = max(SEARCH_CANDIDATE_LIMIT, effective_result_limit)
         session_context = self._load_session_context(prompt, user_id, session_id)
@@ -55,7 +79,7 @@ class ResearchAgent:
                 LOGGER.info("Answered using model knowledge without browsing")
                 return {
                     "prompt": prompt,
-                    "answer": direct["answer"],
+                    "answer": clean_response(direct["answer"]),
                     "model_id": direct["model_id"],
                     "usage": self._merge_usage(history_usage, intent.get("usage", {}), direct.get("usage", {})),
                     "intent": {
@@ -71,8 +95,8 @@ class ResearchAgent:
                     "history_used": session_context["history_used"],
                 }
 
-            query_context = build_query_context(effective_prompt)
-            search_query = rewrite_search_query(effective_prompt)
+            query_context = build_query_context(prompt)
+            search_query = rewrite_search_query(prompt)
             LOGGER.info("Agent rewritten search query: %s", search_query)
             candidates = self.search_tool.run(search_query, effective_candidate_limit)
 
@@ -111,7 +135,7 @@ class ResearchAgent:
         LOGGER.info("Agent produced final summary")
         return {
             "prompt": prompt,
-            "answer": summary["summary"],
+            "answer": clean_response(summary["summary"]),
             "model_id": summary["model_id"],
             "usage": self._merge_usage(history_usage, intent.get("usage", {}), summary.get("usage", {})),
             "intent": {
@@ -144,16 +168,6 @@ class ResearchAgent:
                 "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             }
 
-        history_intent = self.intent_tool.should_read_history(prompt)
-        if not history_intent.get("read_history"):
-            LOGGER.info("History read skipped for session %s: %s", session_id, history_intent.get("reason", ""))
-            return {
-                "effective_prompt": prompt,
-                "history_text": "",
-                "history_used": False,
-                "usage": history_intent.get("usage", {}),
-            }
-
         history_text = self.chat_session_store.build_history_text(user_id, session_id)
         if not history_text:
             LOGGER.info("No prior messages found for session %s and user %s", session_id, user_id)
@@ -161,7 +175,7 @@ class ResearchAgent:
                 "effective_prompt": prompt,
                 "history_text": "",
                 "history_used": False,
-                "usage": history_intent.get("usage", {}),
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             }
 
         effective_prompt = self._compose_prompt_with_history(prompt, history_text)
@@ -170,7 +184,7 @@ class ResearchAgent:
             "effective_prompt": effective_prompt,
             "history_text": history_text,
             "history_used": True,
-            "usage": history_intent.get("usage", {}),
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         }
 
     @staticmethod

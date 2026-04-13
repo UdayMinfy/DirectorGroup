@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from config import BEDROCK_MODEL_ID, BEDROCK_REGION
+from config import BEDROCK_GUARDRAIL_ID, BEDROCK_GUARDRAIL_VERSION, BEDROCK_MODEL_ID, BEDROCK_REGION
 from query_rewriter import parse_resolved_date
 
 
@@ -113,11 +113,17 @@ class ResultRanker:
             ]
         )
 
+        request_params = {
+            "modelId": BEDROCK_MODEL_ID,
+            "messages": [{"role": "user", "content": [{"text": instruction}]}],
+        }
+        if BEDROCK_GUARDRAIL_ID and BEDROCK_GUARDRAIL_VERSION:
+            request_params["guardrailConfig"] = {
+                "guardrailIdentifier": BEDROCK_GUARDRAIL_ID,
+                "guardrailVersion": BEDROCK_GUARDRAIL_VERSION,
+            }
         try:
-            response = self.client.converse(
-                modelId=BEDROCK_MODEL_ID,
-                messages=[{"role": "user", "content": [{"text": instruction}]}],
-            )
+            response = self.client.converse(**request_params)
             text = _extract_text(response)
             parsed = _parse_json_object(text)
             ordered_indices = parsed.get("ranked_indices", []) if isinstance(parsed, dict) else []
