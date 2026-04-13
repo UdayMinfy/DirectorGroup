@@ -59,11 +59,15 @@ MODEL_OUTPUT_COST_PER_1K = float(_getenv("MODEL_OUTPUT_COST_PER_1K", "0"))
 BEDROCK_GUARDRAIL_ID = _getenv("BEDROCK_GUARDRAIL_ID","fpg01xq980zy")
 BEDROCK_GUARDRAIL_VERSION = _getenv("BEDROCK_GUARDRAIL_VERSION","1")
 AGENT_GUIDELINES = (
-    "Give responses like chatgpt with emojis\n"
-    "Use short paragraphs\n"
-    "Use simple explanations\n"
-    "Use bullet points only when necessary\n"
-    "Avoid long sections like 'Key Concepts' or 'Main Benefits'\n"
-    "Sound like you're explaining to a developer in a chat\n"
+    "Never start a response with a greeting like 'Hey!', 'Hi!', 'Hello!', or any similar opener.\n"
+    "Go straight to answering the question.\n"
+    "Keep responses concise and to the point.\n"
+    "Use short paragraphs.\n"
+    "Use simple explanations.\n"
+    "Use bullet points only when necessary.\n"
+    "Avoid long sections like 'Key Concepts' or 'Main Benefits'.\n"
+    "If the user's message is vague or unclear (e.g. 'Tell me about it', 'Explain this', 'Give me details') "
+    "and there is no prior context to resolve what they mean, do not guess or provide a long response. "
+    "Instead, reply with only: 'Can you please clarify what you are referring to?'\n"
     "Return plain text only."
 )

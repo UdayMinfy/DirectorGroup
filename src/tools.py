@@ -8,6 +8,30 @@ from intent_router import BedrockIntentRouter, BedrockKnowledgeResponder
 from web_search import WebSearcher
 
 
+_VAGUE_PATTERNS = [
+    re.compile(r'^tell me (more )?about (it|this|that)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^explain (this|that|it)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^give me (more )?(details?|info(rmation)?)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^more (details?|info(rmation)?)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^elaborate[.?!]?$', re.IGNORECASE),
+    re.compile(r'^what (is|are) (it|this|that)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^can you (explain|tell me|describe) (it|this|that)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^(what|how|why|when|where)[.?!]?$', re.IGNORECASE),
+    re.compile(r'^go on[.?!]?$', re.IGNORECASE),
+    re.compile(r'^(and|so)[.?!]?$', re.IGNORECASE),
+]
+
+
+def is_vague_prompt(prompt: str) -> bool:
+    cleaned = (prompt or "").strip()
+    if not cleaned:
+        return True
+    for pattern in _VAGUE_PATTERNS:
+        if pattern.match(cleaned):
+            return True
+    return False
+
+
 def evaluate_math_expression(expression):
     """
     Safely evaluate a mathematical expression using Python AST.

@@ -14,7 +14,7 @@ from config import (
 from query_rewriter import build_query_context, rewrite_search_query
 from result_ranker import rerank_websites
 from task_models import ExtractionTask
-from tools import BrowseExtractTool, IntentTool, KnowledgeAnswerTool, SearchWebTool, SummarizeTool, clean_response, is_math_expression
+from tools import BrowseExtractTool, IntentTool, KnowledgeAnswerTool, SearchWebTool, SummarizeTool, clean_response, is_math_expression, is_vague_prompt
 
 
 LOGGER = logging.getLogger(__name__)
@@ -59,6 +59,26 @@ class ResearchAgent:
         effective_candidate_limit = max(SEARCH_CANDIDATE_LIMIT, effective_result_limit)
         session_context = self._load_session_context(prompt, user_id, session_id)
         effective_prompt = session_context["effective_prompt"]
+
+        # Return a clarification request for vague prompts that have no prior context to resolve them
+        if is_vague_prompt(prompt) and not session_context["history_used"]:
+            answer = "Can you please clarify what you are referring to?"
+            self._store_session_turn(user_id, session_id, prompt, answer)
+            LOGGER.info("Prompt is vague with no history context; requesting clarification")
+            return {
+                "prompt": prompt,
+                "answer": answer,
+                "model_id": "clarification",
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                "intent": {"route": "clarification", "reason": "Vague prompt with no prior context"},
+                "consensus": {},
+                "fact_extractions": [],
+                "tasks": [],
+                "sources": [],
+                "user_id": user_id,
+                "session_id": session_id,
+                "history_used": False,
+            }
         history_usage = session_context["usage"]
 
         if urls:
