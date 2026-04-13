@@ -10,3 +10,4 @@ class ExtractionTask:
     content: str = ""
     extraction_method: str = ""
     error: str = ""
+    fallback_content: str = ""

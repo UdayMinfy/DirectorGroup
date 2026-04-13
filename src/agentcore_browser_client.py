@@ -1,5 +1,4 @@
 import logging
-import uuid
 
 from bedrock_agentcore.tools.browser_client import BrowserClient
 from playwright.sync_api import sync_playwright
@@ -21,13 +20,9 @@ class AgentCoreBrowserSession:
 
     def __enter__(self):
         if not BROWSER_IDENTIFIER:
-            raise RuntimeError("BROWSER_IDENTIFIER is not configured.")
+            raise RuntimeError("BROWSER_IDENTIFIER/BROWSER_ID is not configured.")
 
-        self.session_id = self.client.start(
-            identifier=BROWSER_IDENTIFIER,
-            name=f"research-session-{uuid.uuid4().hex[:8]}",
-            session_timeout_seconds=900,
-        )
+        self.session_id = self.client.start(identifier=BROWSER_IDENTIFIER)
         LOGGER.info("Started AgentCore browser session %s", self.session_id)
 
         ws_url, headers = self.client.generate_ws_headers()
@@ -43,9 +38,13 @@ class AgentCoreBrowserSession:
                 self._browser.close()
             if self._playwright_manager:
                 self._playwright_manager.__exit__(exc_type, exc_value, traceback)
-            self.client.stop()
-            LOGGER.info("Stopped AgentCore browser session %s", self.session_id)
         finally:
+            try:
+                self.client.stop()
+                LOGGER.info("Stopped AgentCore browser session %s", self.session_id)
+            except Exception:
+                LOGGER.exception("Failed to stop AgentCore browser session %s", self.session_id)
+
             self._context = None
             self._browser = None
             self._playwright = None

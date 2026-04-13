@@ -1,7 +1,9 @@
 boto3
 botocore
-beautifulsoup4
-bedrock-agentcore
-playwright
-psycopg[binary]
 requests
+beautifulsoup4
+playwright
+bedrock-agentcore
+psycopg[binary]
+PyJWT
+cryptography

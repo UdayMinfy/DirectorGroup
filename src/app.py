@@ -1,39 +1,92 @@
+import base64
 import json
 import logging
+from uuid import uuid4
 
 from agent import ResearchAgent
-from quota_service import QuotaExceededError, TokenQuotaService
+from auth import AuthenticationError, extract_bearer_token, validate_access_token
+from budget_service import AccountInactiveError, BudgetExceededError, TokenBudgetService, UserNotFoundError
+from config import JWT_VALIDATION_ENABLED
 
 
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
 agent = ResearchAgent()
-quota_service = TokenQuotaService()
+budget_service = TokenBudgetService()
+
+DEFAULT_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Authorization,Content-Type,X-User-Email",
+    "Access-Control-Allow-Methods": "OPTIONS,POST",
+}
 
 
 def _parse_event(event):
-    if not event:
-        return {}
-
-    if not isinstance(event, dict):
+    if not event or not isinstance(event, dict):
         return {}
 
     body = event.get("body")
+    if event.get("isBase64Encoded") and isinstance(body, str):
+        body = base64.b64decode(body).decode("utf-8")
+
     if isinstance(body, str):
         try:
-            return json.loads(body)
+            parsed = json.loads(body)
+            return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
             return {"prompt": body}
     if isinstance(body, dict):
         return body
     return event
 
+
+def _build_response(status_code, payload, extra_headers=None):
+    headers = dict(DEFAULT_HEADERS)
+    if extra_headers:
+        headers.update(extra_headers)
+    return {
+        "statusCode": status_code,
+        "headers": headers,
+        "body": json.dumps(payload),
+    }
+
+
+def _is_http_event(event):
+    request_context = (event or {}).get("requestContext") or {}
+    return isinstance(request_context.get("http"), dict)
+
+
+def extract_user_email(event, payload):
+    if JWT_VALIDATION_ENABLED and _is_http_event(event):
+        try:
+            token = extract_bearer_token(event)
+            validate_access_token(token)
+            LOGGER.info("JWT validated successfully")
+        except (AuthenticationError, ValueError) as error:
+            raise AuthenticationError(str(error)) from error
+
+    user_email = str((payload or {}).get("email") or "").strip()
+    if not user_email:
+        user_email = str((payload or {}).get("user_id") or "").strip()
+    if not user_email:
+        raise AuthenticationError("Missing authenticated user email in payload.")
+
+    budget_service._get_user_or_raise(user_email)
+    return user_email
+
+
 def lambda_handler(event, context):
+    http_method = (((event or {}).get("requestContext") or {}).get("http") or {}).get("method", "")
+    if http_method == "OPTIONS":
+        LOGGER.info("OPTIONS preflight request allowed")
+        return _build_response(200, {"ok": True})
+
     payload = _parse_event(event)
-    prompt = (payload.get("prompt") or "").strip()
-    external_user_id = (payload.get("user_id") or "").strip()
+    prompt = str(payload.get("prompt") or "").strip()
     urls = payload.get("urls") or []
+    session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
 
     if isinstance(urls, str):
         urls = [urls]
@@ -42,55 +95,53 @@ def lambda_handler(event, context):
     urls = [url.strip() for url in urls if isinstance(url, str) and url.strip()]
 
     if not prompt:
-        return {
-            "statusCode": 400,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": "Request payload must include a non-empty 'prompt'."}),
-        }
-    if not external_user_id:
-        return {
-            "statusCode": 400,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": "Request payload must include a non-empty 'user_id'."}),
-        }
+        return _build_response(400, {"error": "Request payload must include a non-empty 'prompt'."})
 
-    user_id = quota_service.ensure_user(external_user_id)
-    event_id, request_id = quota_service.start_request(user_id, prompt)
+    request_id = str(uuid4())
 
     try:
-        quota_service.check_quota(user_id)
-        if urls:
-            result = agent.run(prompt, urls=urls)
-        else:
-            result = agent.run(prompt)
-        updated_quota = quota_service.record_success(
-            event_id=event_id,
-            user_id=user_id,
-            prompt=prompt,
-            answer=result["answer"],
-            model_id=result["model_id"],
-            usage=result["usage"],
-        )
-        result["request_id"] = request_id
-        result["quota"] = updated_quota
-    except QuotaExceededError as error:
-        quota_service.mark_blocked(event_id, str(error))
-        return {
-            "statusCode": 429,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": str(error), "quota": error.quota_snapshot, "request_id": request_id}),
-        }
-    except Exception as error:
-        quota_service.mark_failed(event_id, str(error))
-        LOGGER.exception("Research workflow failed")
-        return {
-            "statusCode": 500,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": str(error), "request_id": request_id}),
-        }
+        user_email = extract_user_email(event, payload)
+        LOGGER.info("Chat request: user=%s", user_email)
+        budget_snapshot = budget_service.validate_request(user_email)
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(result),
+        if urls:
+            result = agent.run(prompt, urls=urls, user_id=user_email, session_id=session_id)
+        else:
+            result = agent.run(prompt, user_id=user_email, session_id=session_id)
+
+        usage = result.get("usage", {})
+        budget_after = budget_service.track_usage(
+            user_email=user_email,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+        )
+    except AuthenticationError as error:
+        return _build_response(401, {"error": str(error), "request_id": request_id})
+    except UserNotFoundError as error:
+        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
+    except AccountInactiveError as error:
+        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
+    except BudgetExceededError as error:
+        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
+    except Exception as error:
+        LOGGER.exception("Research workflow failed")
+        return _build_response(
+            500,
+            {
+                "error": str(error),
+                "request_id": request_id,
+                "session_id": session_id,
+            },
+        )
+
+    response_payload = {
+        "answer": result.get("answer", ""),
+        "usage": usage,
+        "user_id": user_email,
+        "session_id": result.get("session_id", session_id),
+        "history_used": result.get("history_used", False),
+        "budget": budget_after,
+        "budget_before": budget_snapshot,
+        "streaming_supported": False,
     }
+    return _build_response(200, response_payload)

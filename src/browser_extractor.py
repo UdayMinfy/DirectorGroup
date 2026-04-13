@@ -1,9 +1,6 @@
 import logging
 import re
 
-import requests
-from bs4 import BeautifulSoup
-
 from agentcore_browser_client import AgentCoreBrowserSession
 from config import BROWSER_IDENTIFIER, MAX_PAGE_CHARS, MAX_SOURCE_CHARS, REQUEST_TIMEOUT_SECONDS
 
@@ -25,68 +22,111 @@ NOISE_PATTERNS = (
     "pricing",
 )
 
+BLOCKED_PATTERNS = (
+    "access denied",
+    "forbidden",
+    "request blocked",
+    "temporarily unavailable",
+    "enable javascript",
+    "captcha",
+    "bot verification",
+    "press and hold",
+    "cloudflare",
+    "attention required",
+)
+
 
 class BrowserExtractor:
     def extract(self, url):
-        if BROWSER_IDENTIFIER:
-            try:
-                with AgentCoreBrowserSession() as session:
-                    return self._extract_with_browser_session(url, session)
-            except Exception:
-                LOGGER.exception("Browser extraction failed for %s, falling back to HTTP parsing", url)
+        if not BROWSER_IDENTIFIER:
+            raise RuntimeError("BROWSER_IDENTIFIER/BROWSER_ID is not configured.")
 
-        return self._extract_with_requests(url)
+        with AgentCoreBrowserSession() as session:
+            return self._extract_with_browser_session(url, session)
 
     def extract_with_session(self, url, session):
-        try:
-            return self._extract_with_browser_session(url, session)
-        except Exception:
-            LOGGER.exception("Browser extraction failed for %s, falling back to HTTP parsing", url)
-            return self._extract_with_requests(url)
+        return self._extract_with_browser_session(url, session)
 
     def _extract_with_browser_session(self, url, session):
         page = session.new_page()
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT_SECONDS * 1000)
-            text = page.locator("body").inner_text(timeout=REQUEST_TIMEOUT_SECONDS * 1000)
+            self._prepare_page(page)
+            text = self._load_page_text(page, url)
             title = page.title()
         finally:
             page.close()
 
+        if self._looks_blocked(text, title):
+            raise RuntimeError(f"Blocked or anti-bot page detected for {url}")
+
+        cleaned = self._clean_content(text)
+        if len(cleaned) < 200:
+            raise RuntimeError(f"Insufficient extractable content for {url}")
+
         return {
             "url": url,
             "title": title or url,
-            "content": self._clean_content(text),
+            "content": cleaned,
             "extraction_method": "agentcore_browser_playwright",
         }
 
-    def _extract_with_requests(self, url):
-        response = requests.get(
-            url,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-                )
-            },
+    @staticmethod
+    def _prepare_page(page):
+        page.add_init_script(
+            """
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4] });
+            """
         )
-        response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+    def _load_page_text(self, page, url):
+        page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT_SECONDS * 1000)
+        page.wait_for_timeout(900)
+        self._expand_page(page)
 
-        for node in soup(["script", "style", "noscript"]):
-            node.decompose()
+        try:
+            page.wait_for_function(
+                "document.body && document.body.innerText && document.body.innerText.length > 500",
+                timeout=3000,
+            )
+        except Exception:
+            pass
 
-        title = soup.title.get_text(" ", strip=True) if soup.title else url
-        text = soup.get_text(" ", strip=True)
+        return page.evaluate(
+            """
+            () => {
+                const selectors = ['main', 'article', '[role="main"]', '.content', '#content', 'body'];
+                const parts = [];
+                for (const selector of selectors) {
+                    const node = document.querySelector(selector);
+                    if (!node || !node.innerText) continue;
+                    const value = node.innerText.trim();
+                    if (value) parts.push(value);
+                }
+                return parts.join('\\n\\n');
+            }
+            """
+        )
 
-        return {
-            "url": url,
-            "title": title,
-            "content": self._clean_content(text),
-            "extraction_method": "http_fallback",
-        }
+    @staticmethod
+    def _expand_page(page):
+        try:
+            page.evaluate(
+                """
+                () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    window.scrollTo(0, 0);
+                }
+                """
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _looks_blocked(text, title=""):
+        combined = f"{title}\n{text}".lower()
+        return any(pattern in combined for pattern in BLOCKED_PATTERNS)
 
     @staticmethod
     def _clean_content(text):

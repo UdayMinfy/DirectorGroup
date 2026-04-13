@@ -1,5 +1,6 @@
 from bedrock_client import BedrockSummarizer
 from browser_extractor import BrowserExtractor
+from intent_router import BedrockIntentRouter, BedrockKnowledgeResponder
 from web_search import WebSearcher
 
 
@@ -28,3 +29,22 @@ class SummarizeTool:
 
     def run(self, prompt, sources):
         return self.summarizer.summarize(prompt, sources)
+
+
+class IntentTool:
+    def __init__(self):
+        self.router = BedrockIntentRouter()
+
+    def run(self, prompt):
+        return self.router.classify(prompt)
+
+    def should_read_history(self, prompt):
+        return self.router.should_read_history(prompt)
+
+
+class KnowledgeAnswerTool:
+    def __init__(self):
+        self.responder = BedrockKnowledgeResponder()
+
+    def run(self, prompt, history_text=""):
+        return self.responder.answer(prompt, history_text=history_text)

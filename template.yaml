@@ -12,23 +12,45 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          BEDROCK_REGION: us-east-1
-          BEDROCK_MODEL_ID: amazon.nova-pro-v1:0
+          BEDROCK_REGION: ap-southeast-2
+          BEDROCK_MODEL_ID: au.anthropic.claude-sonnet-4-5-20250929-v1:0
           BROWSER_REGION: ap-southeast-2
           BROWSER_IDENTIFIER: DirectorGroup-aqScKjlUJn
           SEARCH_API_PROVIDER: tavily
           TAVILY_API_KEY: ""
           SEARCH_RESULT_LIMIT: 3
-          MAX_PAGE_CHARS: 12000
-          MAX_SOURCE_CHARS: 4000
+          SEARCH_CANDIDATE_LIMIT: 3
+          MAX_PAGE_CHARS: 18000
+          MAX_SOURCE_CHARS: 6000
           REQUEST_TIMEOUT_SECONDS: 12
+          SEARCH_TIMEZONE: Asia/Kolkata
           DB_HOST: host.docker.internal
           DB_PORT: 5433
           DB_NAME: ecommerce_db
           DB_USER: ecommerce_user
           DB_PASSWORD: ecommerce_pass
-          DEFAULT_DAILY_TOKEN_LIMIT: 20000
-          DEFAULT_MONTHLY_TOKEN_LIMIT: 300000
+          JWT_VALIDATION_ENABLED: true
+          COGNITO_REGION: ap-southeast-2
+          COGNITO_USER_POOL_ID: "ap-southeast-2_gsJ5J02mu"
+          COGNITO_APP_CLIENT_ID: "v218rbfdovpt96f0uurquohib"
+          HARDCODED_USER_EMAIL: "Dillip.Mohanty@directed.com.au"
+          TOKEN_BUDGETS_TABLE: DirectedGroup-UserTokenBudgets
+          DEFAULT_DAILY_TOKEN_LIMIT: 0
+          DEFAULT_MONTHLY_TOKEN_LIMIT: 0
+          REQUEST_TOKEN_PRECHECK: 0
+          MODEL_INPUT_COST_PER_1K: 0
+          MODEL_OUTPUT_COST_PER_1K: 0
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowHeaders:
+            - Authorization
+            - Content-Type
+          AllowMethods:
+            - POST
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -43,3 +65,16 @@ Resources:
                 - bedrock-agentcore:GetBrowserSession
                 - bedrock-agentcore:StopBrowserSession
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/DirectedGroup-UserTokenBudgets
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/ChatSessions
+
+Outputs:
+  ChatFunctionUrl:
+    Description: Direct Lambda Function URL for chat requests
+    Value: !GetAtt ChatFunctionUrl.FunctionUrl
+
