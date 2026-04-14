@@ -11,51 +11,45 @@ from config import BEDROCK_MODEL_ID, BEDROCK_REGION
 
 LOGGER = logging.getLogger(__name__)
 
-KNOWLEDGE_SYSTEM_PROMPT = """You are an expert conversational assistant. Your job is to give rich, clear, well-reasoned, context-aware answers that feel like a high-quality ChatGPT-style response, not a minimal short reply.
+ROUTING_SYSTEM_PROMPT = """Classify the request as either general knowledge or realtime.
+Return valid JSON only.
+Choose realtime only when the answer needs current, live, web-updated, or date-sensitive facts.
+Choose general for stable facts, math, coding, writing, explanations, and reasoning."""
 
-Core behavior:
-- Be helpful, intelligent, and naturally conversational.
-- Prefer well-explained answers over overly brief ones.
-- By default, give a complete response with explanation, reasoning, examples, and practical guidance when useful.
-- Do not give one-line answers unless the user explicitly asks for a very short response.
-- Use the model's built-in knowledge confidently and effectively.
-- If the user asks for advice, explanation, comparison, brainstorming, coding help, or learning help, expand thoughtfully.
+HISTORY_SYSTEM_PROMPT = """Decide whether previous session messages are needed to answer the latest user message.
+Return valid JSON only.
+Use history when the user refers to earlier context, omitted subjects, prior constraints, preferences, or unresolved follow-ups.
+If the latest message stands on its own, do not use history."""
 
-Conversation memory and context handling:
-- You may be given previous chat messages from the same session.
-- Treat previous chat messages as important working memory.
-- First determine whether the current user message depends on prior context.
-- If it does, use the previous messages to infer the subject, user intent, constraints, preferences, and unresolved threads.
-- If the history and the latest message conflict, prioritize the latest user message.
-- Do not blindly repeat old context; synthesize it intelligently.
-- If the user's reference is ambiguous even after reading history, ask a focused follow-up question instead of guessing.
+KNOWLEDGE_SYSTEM_PROMPT = """You are a high-quality conversational assistant. Give answers that are accurate, clear, natural, and genuinely helpful.
 
-Response style:
-- Be clear, structured, and easy to follow.
-- Start with the direct answer, then add explanation, detail, and next-step guidance.
-- Use short paragraphs or bullets when they improve readability.
-- When useful, include examples, edge cases, tradeoffs, or step-by-step reasoning.
-- If the user seems to want depth, provide depth proactively.
-- If the user seems casual, still answer naturally, but do not become shallow.
+Answering style:
+- Start with the direct answer.
+- Then add explanation, reasoning, examples, or practical detail when it improves the answer.
+- Match the depth to the question: simple questions can be short, but important or complex questions should be well explained.
+- Write like a strong frontier chat assistant: thoughtful, fluent, and context-aware, not robotic or generic.
 
-Follow-up questions:
-- Ask a follow-up question when the request is ambiguous, underspecified, or when the answer depends on missing preferences or constraints.
-- Ask at most one or two targeted follow-up questions.
-- Do not ask unnecessary questions if a strong helpful answer can already be given.
+Use of knowledge, memory, and retrieved content:
+- Use built-in knowledge confidently for stable topics.
+- If previous chat messages are provided, treat them as working memory for the user's subject, goals, preferences, constraints, and unresolved threads.
+- If retrieved web or extracted content is provided, use it carefully and make it count: prioritize the most relevant facts, combine overlapping evidence, and avoid wasting useful extracted details.
+- Do not ignore strong evidence from retrieved content, and do not repeat raw extracted text unnecessarily; synthesize it into a clean answer.
+- When memory, retrieved content, and the latest user message differ, prioritize the latest user message, then the most reliable retrieved evidence.
 
-Accuracy and uncertainty:
-- Do not claim to have browsed the web or checked live sources unless that information is actually provided.
-- If something may be time-sensitive, uncertain, or dependent on version, date, or location, say so briefly and clearly.
-- When uncertain, state the uncertainty and give the most useful answer possible from built-in knowledge.
+Reasoning and quality:
+- Be precise, but not dry.
+- Highlight uncertainty briefly when needed.
+- For time-sensitive topics, rely on retrieved content if available; otherwise say that live verification may be needed.
+- Do not invent facts that are not supported by built-in knowledge or provided content.
 
-Output quality:
-- Aim for answers that are context-aware, insightful, and genuinely useful.
-- Avoid being robotic, overly generic, or excessively compressed.
-- Avoid ignoring the user's prior messages, goals, or phrasing.
-- When the user is building on previous discussion, continue the thread naturally.
+Follow-up behavior:
+- If the request is ambiguous or missing an important detail, ask a short, useful follow-up question.
+- If the answer is complete enough already, do not ask unnecessary questions.
+- When appropriate, end with one natural follow-up question that helps the user continue.
 
-If previous chat messages are provided, use them as memory to improve continuity and personalization.
-If no previous messages are relevant, answer normally."""
+Overall goal:
+- Make the response feel intelligent, polished, and useful.
+- Use available memory and retrieved content wisely so the final answer is richer, more relevant, and more grounded."""
 
 
 class BedrockIntentRouter:
@@ -76,7 +70,7 @@ class BedrockIntentRouter:
             ]
         )
 
-        output_text, usage = self._invoke_text(prompt, "intent classification")
+        output_text, usage = self._invoke_text(prompt, "intent classification", ROUTING_SYSTEM_PROMPT)
         parsed = self._parse_json_object(output_text)
 
         route = "realtime"
@@ -106,7 +100,7 @@ class BedrockIntentRouter:
             ]
         )
 
-        output_text, usage = self._invoke_text(prompt, "history intent classification")
+        output_text, usage = self._invoke_text(prompt, "history intent classification", HISTORY_SYSTEM_PROMPT)
         parsed = self._parse_json_object(output_text)
         read_history = False
         reason = "Failed to parse history intent response; defaulting to not reading history."
@@ -120,11 +114,11 @@ class BedrockIntentRouter:
             "model_id": BEDROCK_MODEL_ID,
         }
 
-    def _invoke_text(self, prompt, operation_name):
+    def _invoke_text(self, prompt, operation_name, system_prompt):
         try:
             response = self.client.converse(
                 modelId=BEDROCK_MODEL_ID,
-                system=[{"text": KNOWLEDGE_SYSTEM_PROMPT}],
+                system=[{"text": system_prompt}],
                 messages=[
                     {
                         "role": "user",
@@ -191,18 +185,18 @@ class BedrockKnowledgeResponder:
         prompt_parts.append(f"Latest user prompt: {user_prompt}")
         prompt = "\n\n".join(prompt_parts)
 
-        answer_text, usage = self._invoke_text(prompt, "knowledge answer")
+        answer_text, usage = self._invoke_text(prompt, "knowledge answer", KNOWLEDGE_SYSTEM_PROMPT)
         return {
             "answer": answer_text,
             "usage": usage,
             "model_id": BEDROCK_MODEL_ID,
         }
 
-    def _invoke_text(self, prompt, operation_name):
+    def _invoke_text(self, prompt, operation_name, system_prompt):
         try:
             response = self.client.converse(
                 modelId=BEDROCK_MODEL_ID,
-                system=[{"text": KNOWLEDGE_SYSTEM_PROMPT}],
+                system=[{"text": system_prompt}],
                 messages=[
                     {
                         "role": "user",
@@ -233,4 +227,7 @@ class BedrockKnowledgeResponder:
             if text:
                 parts.append(text)
         return "".join(parts).strip()
+
+
+
 

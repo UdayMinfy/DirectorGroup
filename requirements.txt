@@ -1,9 +1,6 @@
-boto3
-botocore
-beautifulsoup4
 bedrock-agentcore
 playwright
-psycopg[binary]
 requests
 PyJWT
 cryptography
+litellm
