@@ -4,6 +4,5 @@ requests
 beautifulsoup4
 playwright
 bedrock-agentcore
-psycopg[binary]
 PyJWT
 cryptography

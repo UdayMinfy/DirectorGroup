@@ -65,25 +65,35 @@ class ChatSessionStore:
         if not user_id or not session_id or not normalized_messages:
             return
 
+        existing_messages = self.read_messages(user_id, session_id)
         now = datetime.now(timezone.utc).isoformat()
         title = self._build_title(normalized_messages)
+        update_expression = (
+            "SET updated_at = :updated_at, "
+            "created_at = if_not_exists(created_at, :created_at), "
+            "messages = list_append(if_not_exists(messages, :empty_messages), :messages)"
+        )
+        expression_attribute_values = {
+            ":updated_at": now,
+            ":created_at": now,
+            ":empty_messages": [],
+            ":messages": normalized_messages,
+        }
+
+        if not existing_messages:
+            update_expression = (
+                "SET updated_at = :updated_at, "
+                "created_at = if_not_exists(created_at, :created_at), "
+                "title = :title, "
+                "messages = list_append(if_not_exists(messages, :empty_messages), :messages)"
+            )
+            expression_attribute_values[":title"] = title
 
         try:
             self.table.update_item(
                 Key={"user_id": user_id, "session_id": session_id},
-                UpdateExpression=(
-                    "SET updated_at = :updated_at, "
-                    "created_at = if_not_exists(created_at, :created_at), "
-                    "title = if_not_exists(title, :title), "
-                    "messages = list_append(if_not_exists(messages, :empty_messages), :messages)"
-                ),
-                ExpressionAttributeValues={
-                    ":updated_at": now,
-                    ":created_at": now,
-                    ":title": title,
-                    ":empty_messages": [],
-                    ":messages": normalized_messages,
-                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_attribute_values,
             )
         except (ClientError, BotoCoreError) as error:
             LOGGER.exception(
@@ -136,3 +146,4 @@ class ChatSessionStore:
             if title:
                 return title[:200]
         return "Chat session"
+
