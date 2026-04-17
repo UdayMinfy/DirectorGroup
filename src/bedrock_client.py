@@ -34,31 +34,23 @@ class BedrockSummarizer:
     def summarize(self, user_prompt, sources):
         query_context = build_query_context(user_prompt)
         requested_date = parse_resolved_date(query_context.get("resolved_date") or "")
-        fact_extractions = []
-        total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
-        for index, source in enumerate(sources, start=1):
-            extracted_facts, usage = self._extract_source_facts(index, user_prompt, source, requested_date)
-            fact_extractions.append(extracted_facts)
-            self._add_usage(total_usage, usage)
-
-        consensus = self._merge_facts(fact_extractions)
-        prompt = self._build_consensus_prompt(user_prompt, consensus, fact_extractions)
+        selected_sources, fact_extractions = self._prepare_sources_for_summary(sources, requested_date)
+        consensus = self._build_fast_consensus(selected_sources, requested_date)
+        prompt = self._build_summary_prompt(user_prompt, selected_sources, requested_date)
         output_text, usage = self._invoke_text(prompt, "summarize")
-        self._add_usage(total_usage, usage)
 
         LOGGER.info("Nova Pro summary generated")
         LOGGER.info(
             "Summary token usage - input: %s, output: %s, total: %s",
-            total_usage["input_tokens"],
-            total_usage["output_tokens"],
-            total_usage["total_tokens"],
+            usage["input_tokens"],
+            usage["output_tokens"],
+            usage["total_tokens"],
         )
 
         return {
             "model_id": BEDROCK_MODEL_ID,
             "summary": output_text,
-            "usage": total_usage,
+            "usage": usage,
             "consensus": consensus,
             "fact_extractions": fact_extractions,
             "raw_prompt": prompt,
@@ -86,74 +78,49 @@ class BedrockSummarizer:
             "total_tokens": usage.get("totalTokens") or 0,
         }
 
-    def _extract_source_facts(self, index, user_prompt, source, requested_date):
-        prompt = "\n\n".join(
-            [
-                "You extract structured facts from a single source for later consensus merging.",
-                "Use only the source provided below.",
-                "Return JSON only with these keys:",
-                (
-                    '{"source_index": 0, "title": "", "url": "", "event": "", "date": "", '
-                    '"winner": "", "participants": [], "score": "", "highlights": [], '
-                    '"answer_relevance": "high|medium|low", "confidence": "high|medium|low", '
-                    '"conflicts": [], "raw_supporting_facts": []}'
-                ),
-                "If a field is unknown, use an empty string or empty list.",
-                f"User question: {user_prompt}",
-                f"Source index: {index}",
-                f"Title: {source.get('title')}",
-                f"URL: {source.get('url')}",
-                f"Content: {source.get('content')}",
-            ]
-        )
+    def _prepare_sources_for_summary(self, sources, requested_date):
+        prepared = []
+        matched = []
 
-        output_text, usage = self._invoke_text(prompt, "fact extraction")
-        parsed = self._parse_json_object(output_text)
+        for index, source in enumerate(sources, start=1):
+            detected_date = self._detect_source_date({}, source)
+            relevance = "high"
+            if requested_date and detected_date and not self._same_date(detected_date, requested_date):
+                relevance = "low"
 
-        if not isinstance(parsed, dict):
-            LOGGER.warning("Fact extraction returned non-JSON for source %s", source.get("url"))
-            parsed = {}
+            item = {
+                "source_index": index,
+                "title": source.get("title", ""),
+                "url": source.get("url", ""),
+                "content": source.get("content", ""),
+                "detected_date": detected_date["text"] if detected_date else "",
+                "answer_relevance": relevance,
+            }
+            prepared.append(item)
+            if relevance != "low":
+                matched.append(item)
 
-        facts = {
-            "source_index": index,
-            "title": source.get("title", ""),
-            "url": source.get("url", ""),
-            "event": self._clean_text(parsed.get("event")),
-            "date": self._clean_text(parsed.get("date")),
-            "winner": self._clean_text(parsed.get("winner")),
-            "participants": self._normalize_list(parsed.get("participants")),
-            "score": self._clean_text(parsed.get("score")),
-            "highlights": self._normalize_list(parsed.get("highlights")),
-            "answer_relevance": self._clean_text(parsed.get("answer_relevance")) or "low",
-            "confidence": self._clean_text(parsed.get("confidence")) or "low",
-            "conflicts": self._normalize_list(parsed.get("conflicts")),
-            "raw_supporting_facts": self._normalize_list(parsed.get("raw_supporting_facts")),
+        selected = matched or prepared
+        fact_extractions = [
+            {
+                "source_index": item["source_index"],
+                "title": item["title"],
+                "url": item["url"],
+                "date": item["detected_date"],
+                "answer_relevance": item["answer_relevance"],
+            }
+            for item in selected
+        ]
+        return selected, fact_extractions
+
+    @staticmethod
+    def _build_fast_consensus(selected_sources, requested_date):
+        supporting_sources = [item.get("url", "") for item in selected_sources if item.get("url")]
+        return {
+            "date": requested_date["text"] if requested_date else "",
+            "supporting_sources": supporting_sources,
+            "source_count": len(supporting_sources),
         }
-        return self._apply_requested_date_validation(facts, source, requested_date), usage
-
-    def _apply_requested_date_validation(self, facts, source, requested_date):
-        if not requested_date:
-            return facts
-
-        detected_date = self._detect_source_date(facts, source)
-        if detected_date:
-            facts["detected_date"] = detected_date["text"]
-            if not self._same_date(detected_date, requested_date):
-                facts["answer_relevance"] = "low"
-                facts["confidence"] = "low"
-                facts["conflicts"] = facts.get("conflicts", []) + [
-                    f"Source date {detected_date['text']} does not match requested date {requested_date['text']}."
-                ]
-                return facts
-
-        if self._looks_like_match_number_confusion(source, requested_date):
-            facts["answer_relevance"] = "low"
-            facts["confidence"] = "low"
-            facts["conflicts"] = facts.get("conflicts", []) + [
-                f"Match number {requested_date['day']} was treated as a date-like signal without matching {requested_date['text']}."
-            ]
-
-        return facts
 
     def _detect_source_date(self, facts, source):
         candidates = [
@@ -227,92 +194,33 @@ class BedrockSummarizer:
         )
 
     @staticmethod
-    def _looks_like_match_number_confusion(source, requested_date):
-        title = (source.get("title") or "").lower()
-        url = (source.get("url") or "").lower()
-        target = requested_date["day"]
-        has_match_number = f"match {target}" in title or f"match-{target}" in url
-        has_requested_month = requested_date["month_name"].lower() in f"{title} {url}"
-        return has_match_number and not has_requested_month
-
-    @classmethod
-    def _merge_facts(cls, fact_extractions):
-        relevant = [
-            item
-            for item in fact_extractions
-            if item.get("answer_relevance") in {"high", "medium"}
-        ] or fact_extractions
-
-        return {
-            "event": cls._pick_consensus_value(relevant, "event"),
-            "date": cls._pick_consensus_value(relevant, "date"),
-            "winner": cls._pick_consensus_value(relevant, "winner"),
-            "score": cls._pick_consensus_value(relevant, "score"),
-            "participants": cls._merge_list_values(relevant, "participants"),
-            "highlights": cls._merge_list_values(relevant, "highlights"),
-            "conflicts": cls._merge_list_values(relevant, "conflicts"),
-            "supporting_sources": [item.get("url", "") for item in relevant if item.get("url")],
-            "source_count": len(relevant),
-        }
-
-    @classmethod
-    def _pick_consensus_value(cls, items, key):
-        ranked = {}
-        for item in items:
-            value = cls._clean_text(item.get(key))
-            if not value:
-                continue
-
-            normalized = value.casefold()
-            bucket = ranked.setdefault(
-                normalized,
-                {"value": value, "count": 0, "weight": 0},
+    def _build_summary_prompt(user_prompt, selected_sources, requested_date):
+        source_blocks = []
+        for item in selected_sources:
+            source_blocks.append(
+                "\n".join(
+                    [
+                        f"Source index: {item.get('source_index')}",
+                        f"Title: {item.get('title')}",
+                        f"URL: {item.get('url')}",
+                        f"Detected date: {item.get('detected_date')}",
+                        f"Content: {item.get('content')}",
+                    ]
+                )
             )
-            bucket["count"] += 1
-            bucket["weight"] += cls._confidence_weight(item.get("confidence"))
 
-        if not ranked:
-            return ""
-
-        best = max(
-            ranked.values(),
-            key=lambda entry: (entry["count"], entry["weight"], len(entry["value"])),
-        )
-        return best["value"]
-
-    @classmethod
-    def _merge_list_values(cls, items, key):
-        merged = []
-        seen = set()
-
-        for item in items:
-            for value in cls._normalize_list(item.get(key)):
-                normalized = value.casefold()
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                merged.append(value)
-
-        return merged
-
-    @staticmethod
-    def _confidence_weight(confidence):
-        return {"high": 3, "medium": 2, "low": 1}.get(confidence, 0)
-
-    @staticmethod
-    def _build_consensus_prompt(user_prompt, consensus, fact_extractions):
         return "\n\n".join(
             [
                 "You are a research assistant.",
-                "Answer only from the merged evidence below.",
-                "Combine consistent facts from multiple sources into one answer.",
-                "Prefer facts supported by multiple relevant sources.",
+                "Answer only from the sources below.",
+                "Prefer facts repeated across multiple relevant sources.",
+                "If a requested date is provided, prioritize sources that match that date.",
                 "If there are conflicts, mention them briefly instead of silently picking one side.",
                 "Keep the answer clear and helpful.",
                 "End with a Sources section listing only the URLs actually used.",
                 f"User question: {user_prompt}",
-                f"Consensus facts: {json.dumps(consensus, ensure_ascii=True)}",
-                f"Per-source extracted facts: {json.dumps(fact_extractions, ensure_ascii=True)}",
+                f"Requested date: {requested_date['text'] if requested_date else ''}",
+                f"Sources: {json.dumps(source_blocks, ensure_ascii=True)}",
             ]
         )
 
@@ -328,44 +236,3 @@ class BedrockSummarizer:
             if text:
                 parts.append(text)
         return "".join(parts).strip()
-
-    @classmethod
-    def _parse_json_object(cls, text):
-        if not text:
-            return None
-
-        stripped = text.strip()
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-
-        match = re.search(r"\{.*\}", stripped, re.DOTALL)
-        if not match:
-            return None
-
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-
-    @staticmethod
-    def _clean_text(value):
-        if value is None:
-            return ""
-        return str(value).strip()
-
-    @classmethod
-    def _normalize_list(cls, value):
-        if not value:
-            return []
-        if isinstance(value, list):
-            return [cls._clean_text(item) for item in value if cls._clean_text(item)]
-        cleaned = cls._clean_text(value)
-        return [cleaned] if cleaned else []
-
-    @staticmethod
-    def _add_usage(total_usage, usage):
-        total_usage["input_tokens"] += usage.get("input_tokens", 0)
-        total_usage["output_tokens"] += usage.get("output_tokens", 0)
-        total_usage["total_tokens"] += usage.get("total_tokens", 0)

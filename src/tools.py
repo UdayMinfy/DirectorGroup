@@ -35,11 +35,8 @@ class IntentTool:
     def __init__(self):
         self.router = BedrockIntentRouter()
 
-    def run(self, prompt):
-        return self.router.classify(prompt)
-
-    def should_read_history(self, prompt):
-        return self.router.should_read_history(prompt)
+    def decide_context_strategy(self, prompt):
+        return self.router.decide_context_strategy(prompt)
 
 
 class KnowledgeAnswerTool:

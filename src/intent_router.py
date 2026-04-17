@@ -11,108 +11,85 @@ from config import BEDROCK_MODEL_ID, BEDROCK_REGION
 
 LOGGER = logging.getLogger(__name__)
 
-ROUTING_SYSTEM_PROMPT = """Classify the request as either general knowledge or realtime.
-Return valid JSON only.
-Choose realtime only when the answer needs current, live, web-updated, or date-sensitive facts.
-Choose general for stable facts, math, coding, writing, explanations, and reasoning."""
+CONTEXT_DECISION_SYSTEM_PROMPT = """You are an intent router for the latest user message.
+Return JSON only:
+{"read_history": true, "use_web_search": true, "reason": "short reason"}
+Rules:
+- Set read_history = true only if the latest message depends on earlier chat context, such as follow-ups, omitted subjects, references like "it", "that", "this", "him", "them", corrections, or "tell me more".
+- Set read_history = false if the latest message is self-contained.
+- Set use_web_search = true if answering correctly needs current, recent, changing, date-sensitive, live, or externally verifiable information.
+Examples: latest news, recent events, match results, schedules, prices, weather, current positions, or anything likely to have changed.
+- Set use_web_search = false if the query can be answered from stable built-in knowledge.
+Examples: historical facts, general explanations, concepts, writing help, and timeless information.
+Decision modes:
+- both false: self-contained + stable knowledge question
+- read_history true, use_web_search false: follow-up about prior chat, but no fresh facts needed
+- read_history false, use_web_search true: self-contained question needing fresh/current facts
+- both true: follow-up that also needs fresh/current facts
+Bias:
+- If the message contains words like "latest", "current", "today", "recent", "now", prefer use_web_search = true.
+- If unsure whether facts may have changed, prefer use_web_search = true.
+- If unsure whether the message refers to prior chat, prefer read_history = true.
+Do not answer the user. Output JSON only."""
 
-HISTORY_SYSTEM_PROMPT = """Decide whether previous session messages are needed to answer the latest user message.
-Return valid JSON only.
-Use history when the user refers to earlier context, omitted subjects, prior constraints, preferences, or unresolved follow-ups.
-If the latest message stands on its own, do not use history."""
-
-KNOWLEDGE_SYSTEM_PROMPT = """You are a high-quality conversational assistant. Give answers that are accurate, clear, natural, and genuinely helpful.
-
-Answering style:
+KNOWLEDGE_SYSTEM_PROMPT = """You are a helpful, polished conversational assistant.
+Answer style:
 - Start with the direct answer.
-- Then add explanation, reasoning, examples, or practical detail when it improves the answer.
-- Match the depth to the question: simple questions can be short, but important or complex questions should be well explained.
-- Write like a strong frontier chat assistant: thoughtful, fluent, and context-aware, not robotic or generic.
-
-Use of knowledge, memory, and retrieved content:
-- Use built-in knowledge confidently for stable topics.
-- If previous chat messages are provided, treat them as working memory for the user's subject, goals, preferences, constraints, and unresolved threads.
-- If retrieved web or extracted content is provided, use it carefully and make it count: prioritize the most relevant facts, combine overlapping evidence, and avoid wasting useful extracted details.
-- Do not ignore strong evidence from retrieved content, and do not repeat raw extracted text unnecessarily; synthesize it into a clean answer.
-- When memory, retrieved content, and the latest user message differ, prioritize the latest user message, then the most reliable retrieved evidence.
-
-Reasoning and quality:
-- Be precise, but not dry.
-- Highlight uncertainty briefly when needed.
-- For time-sensitive topics, rely on retrieved content if available; otherwise say that live verification may be needed.
-- Do not invent facts that are not supported by built-in knowledge or provided content.
-
-Follow-up behavior:
-- If the request is ambiguous or missing an important detail, ask a short, useful follow-up question.
-- If the answer is complete enough already, do not ask unnecessary questions.
-- When appropriate, end with one natural follow-up question that helps the user continue.
-
-Overall goal:
-- Make the response feel intelligent, polished, and useful.
-- Use available memory and retrieved content wisely so the final answer is richer, more relevant, and more grounded."""
+- Add brief explanation or examples only when useful.
+- Keep simple answers short and complex answers clear.
+- Write naturally, confidently, and conversationally.
+Use of knowledge:
+- Use built-in knowledge for stable topics.
+- If prior chat is provided, use it as working memory.
+- If retrieved content is provided, prioritize the most relevant facts and synthesize them clearly.
+- If sources conflict, follow the latest user request first, then the strongest evidence.
+- Do not invent facts.
+Quality:
+- Be accurate, clear, and concise.
+- Mention uncertainty briefly when needed.
+- For time-sensitive topics, rely on retrieved content if available; otherwise say live verification may be needed.
+Formatting:
+- Make the answer easy to scan.
+- When helpful, use light visual markers like: ✓, •, 👍
+- Do not overuse symbols or make the response noisy.
+Follow-up:
+- Ask a short follow-up only if needed for clarity or if it genuinely helps the user continue."""
 
 
 class BedrockIntentRouter:
     def __init__(self):
         self.client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
 
-    def classify(self, user_prompt):
+    def decide_context_strategy(self, user_prompt):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         prompt = "\n\n".join(
             [
-                "Classify whether the user question requires real-time or web-updated information.",
-                "Return JSON only with keys: route, reason.",
-                'Allowed route values: "realtime" or "general".',
-                "Choose realtime when latest/current/live/news/price/schedule/time-sensitive facts are needed.",
-                "Choose general for timeless concepts, explanations, coding help, writing, math, and stable facts.",
+                "Decide whether the assistant should read previous session history and/or use web search.",
+                "Return JSON only with keys: read_history, use_web_search, reason.",
+                "Use read_history=true when the latest message depends on earlier chat context.",
+                "Use use_web_search=true when the answer needs latest/current/live/news/price/schedule/date-sensitive facts.",
+                "Use both=false for standalone stable questions.",
+                "Use both=true when the user asks a follow-up that also needs fresh web information.",
                 f"Current UTC date: {today}",
                 f"User prompt: {user_prompt}",
             ]
         )
 
-        output_text, usage = self._invoke_text(prompt, "intent classification", ROUTING_SYSTEM_PROMPT)
+        output_text, usage = self._invoke_text(prompt, "context strategy decision", CONTEXT_DECISION_SYSTEM_PROMPT)
         parsed = self._parse_json_object(output_text)
 
-        route = "realtime"
-        reason = "Failed to parse intent response; defaulting to realtime for safer freshness."
-
-        if isinstance(parsed, dict):
-            candidate = (parsed.get("route") or "").strip().lower()
-            if candidate in {"realtime", "general"}:
-                route = candidate
-            reason = (parsed.get("reason") or reason).strip()
-
-        return {
-            "route": route,
-            "reason": reason,
+        strategy = {
+            "read_history": False,
+            "use_web_search": True,
+            "reason": "Failed to parse context strategy response; defaulting to web search without history.",
             "usage": usage,
             "model_id": BEDROCK_MODEL_ID,
         }
-
-    def should_read_history(self, user_prompt):
-        prompt = "\n\n".join(
-            [
-                "Decide whether answering the latest user message requires previous chat messages from the same session.",
-                "Return JSON only with keys: read_history, reason.",
-                'read_history must be true when the user refers to earlier context like: continue, that, this, above, previous, same as before, explain more, summarize again, follow-up questions, or omitted subject references.',
-                'read_history must be false when the latest user prompt is standalone and understandable by itself.',
-                f"User prompt: {user_prompt}",
-            ]
-        )
-
-        output_text, usage = self._invoke_text(prompt, "history intent classification", HISTORY_SYSTEM_PROMPT)
-        parsed = self._parse_json_object(output_text)
-        read_history = False
-        reason = "Failed to parse history intent response; defaulting to not reading history."
         if isinstance(parsed, dict):
-            read_history = bool(parsed.get("read_history"))
-            reason = (parsed.get("reason") or reason).strip()
-        return {
-            "read_history": read_history,
-            "reason": reason,
-            "usage": usage,
-            "model_id": BEDROCK_MODEL_ID,
-        }
+            strategy["read_history"] = bool(parsed.get("read_history"))
+            strategy["use_web_search"] = bool(parsed.get("use_web_search"))
+            strategy["reason"] = (parsed.get("reason") or strategy["reason"]).strip()
+        return strategy
 
     def _invoke_text(self, prompt, operation_name, system_prompt):
         try:
@@ -227,7 +204,3 @@ class BedrockKnowledgeResponder:
             if text:
                 parts.append(text)
         return "".join(parts).strip()
-
-
-
-

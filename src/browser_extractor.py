@@ -82,13 +82,13 @@ class BrowserExtractor:
 
     def _load_page_text(self, page, url):
         page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT_SECONDS * 1000)
-        page.wait_for_timeout(900)
+        page.wait_for_timeout(250)
         self._expand_page(page)
 
         try:
             page.wait_for_function(
                 "document.body && document.body.innerText && document.body.innerText.length > 500",
-                timeout=3000,
+                timeout=1500,
             )
         except Exception:
             pass
@@ -159,3 +159,4 @@ class BrowserExtractor:
 
         condensed = " ".join(cleaned_segments)
         return condensed[:MAX_SOURCE_CHARS]
+

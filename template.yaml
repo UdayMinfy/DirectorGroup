@@ -20,9 +20,10 @@ Resources:
           TAVILY_API_KEY: ""
           SEARCH_RESULT_LIMIT: 3
           SEARCH_CANDIDATE_LIMIT: 3
+          USE_TAVILY_RESULT_ORDER: true
           MAX_PAGE_CHARS: 18000
           MAX_SOURCE_CHARS: 6000
-          REQUEST_TIMEOUT_SECONDS: 12
+          REQUEST_TIMEOUT_SECONDS: 8
           SEARCH_TIMEZONE: Asia/Kolkata
           DB_HOST: host.docker.internal
           DB_PORT: 5433
@@ -77,4 +78,5 @@ Outputs:
   ChatFunctionUrl:
     Description: Direct Lambda Function URL for chat requests
     Value: !GetAtt ChatFunctionUrl.FunctionUrl
+
 

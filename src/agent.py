@@ -1,7 +1,7 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
-from agentcore_browser_client import AgentCoreBrowserSession
 from chat_session_store import ChatSessionStore
 from config import (
     EXTRACTION_SUCCESS_TARGET,
@@ -33,9 +33,10 @@ class ResearchAgent:
         LOGGER.info("Agent received prompt: %s", prompt)
         effective_result_limit = max(SEARCH_RESULT_LIMIT, MIN_SEARCH_RESULTS)
         effective_candidate_limit = max(SEARCH_CANDIDATE_LIMIT, effective_result_limit)
-        session_context = self._load_session_context(prompt, user_id, session_id)
-        effective_prompt = session_context["effective_prompt"]
-        history_usage = session_context["usage"]
+        routing = self._resolve_context_strategy(prompt, user_id, session_id)
+        effective_prompt = routing["effective_prompt"]
+        routing_usage = routing["usage"]
+        use_web_search = routing["use_web_search"]
 
         if urls:
             websites = [{"title": url, "url": url} for url in urls[:effective_result_limit]]
@@ -45,32 +46,35 @@ class ResearchAgent:
                 "reason": "Explicit URLs were provided, so browsing/extraction is required.",
                 "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             }
+        elif not use_web_search:
+            direct = self.knowledge_answer_tool.run(prompt, history_text=routing["history_text"])
+            self._store_session_turn(user_id, session_id, prompt, direct["answer"])
+            LOGGER.info("Answered using model knowledge without browsing")
+            return {
+                "prompt": prompt,
+                "answer": direct["answer"],
+                "model_id": direct["model_id"],
+                "usage": self._merge_usage(routing_usage, direct.get("usage", {})),
+                "intent": {
+                    "route": "general",
+                    "reason": routing.get("reason", ""),
+                    "read_history": routing["history_used"],
+                    "use_web_search": False,
+                },
+                "consensus": {},
+                "fact_extractions": [],
+                "tasks": [],
+                "sources": [],
+                "user_id": user_id,
+                "session_id": session_id,
+                "history_used": routing["history_used"],
+            }
         else:
-            intent = self.intent_tool.run(effective_prompt)
-            LOGGER.info("Intent route selected: %s (%s)", intent["route"], intent.get("reason", ""))
-
-            if intent["route"] == "general":
-                direct = self.knowledge_answer_tool.run(prompt, history_text=session_context["history_text"])
-                self._store_session_turn(user_id, session_id, prompt, direct["answer"])
-                LOGGER.info("Answered using model knowledge without browsing")
-                return {
-                    "prompt": prompt,
-                    "answer": direct["answer"],
-                    "model_id": direct["model_id"],
-                    "usage": self._merge_usage(history_usage, intent.get("usage", {}), direct.get("usage", {})),
-                    "intent": {
-                        "route": intent["route"],
-                        "reason": intent.get("reason", ""),
-                    },
-                    "consensus": {},
-                    "fact_extractions": [],
-                    "tasks": [],
-                    "sources": [],
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "history_used": session_context["history_used"],
-                }
-
+            intent = {
+                "route": "realtime",
+                "reason": routing.get("reason", ""),
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            }
             query_context = build_query_context(effective_prompt)
             search_query = rewrite_search_query(effective_prompt)
             LOGGER.info("Agent rewritten search query: %s", search_query)
@@ -113,10 +117,12 @@ class ResearchAgent:
             "prompt": prompt,
             "answer": summary["summary"],
             "model_id": summary["model_id"],
-            "usage": self._merge_usage(history_usage, intent.get("usage", {}), summary.get("usage", {})),
+            "usage": self._merge_usage(routing_usage, intent.get("usage", {}), summary.get("usage", {})),
             "intent": {
                 "route": intent["route"],
                 "reason": intent.get("reason", ""),
+                "read_history": routing["history_used"],
+                "use_web_search": True,
             },
             "consensus": summary.get("consensus", {}),
             "fact_extractions": summary.get("fact_extractions", []),
@@ -132,45 +138,41 @@ class ResearchAgent:
             ],
             "user_id": user_id,
             "session_id": session_id,
-            "history_used": session_context["history_used"],
+            "history_used": routing["history_used"],
         }
 
-    def _load_session_context(self, prompt, user_id, session_id):
-        if not user_id or not session_id:
+    def _resolve_context_strategy(self, prompt, user_id, session_id):
+        default_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        if not prompt:
             return {
                 "effective_prompt": prompt,
                 "history_text": "",
                 "history_used": False,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                "use_web_search": False,
+                "reason": "",
+                "usage": default_usage,
             }
 
-        history_intent = self.intent_tool.should_read_history(prompt)
-        if not history_intent.get("read_history"):
-            LOGGER.info("History read skipped for session %s: %s", session_id, history_intent.get("reason", ""))
-            return {
-                "effective_prompt": prompt,
-                "history_text": "",
-                "history_used": False,
-                "usage": history_intent.get("usage", {}),
-            }
+        strategy = self.intent_tool.decide_context_strategy(prompt)
+        history_text = ""
+        history_used = False
 
-        history_text = self.chat_session_store.build_history_text(user_id, session_id)
-        if not history_text:
-            LOGGER.info("No prior messages found for session %s and user %s", session_id, user_id)
-            return {
-                "effective_prompt": prompt,
-                "history_text": "",
-                "history_used": False,
-                "usage": history_intent.get("usage", {}),
-            }
+        if strategy.get("read_history") and user_id and session_id:
+            history_text = self.chat_session_store.build_history_text(user_id, session_id)
+            if history_text:
+                history_used = True
+                LOGGER.info("Loaded prior messages for session %s and user %s", session_id, user_id)
+            else:
+                LOGGER.info("No prior messages found for session %s and user %s", session_id, user_id)
 
-        effective_prompt = self._compose_prompt_with_history(prompt, history_text)
-        LOGGER.info("Loaded prior messages for session %s and user %s", session_id, user_id)
+        effective_prompt = self._compose_prompt_with_history(prompt, history_text) if history_used else prompt
         return {
             "effective_prompt": effective_prompt,
             "history_text": history_text,
-            "history_used": True,
-            "usage": history_intent.get("usage", {}),
+            "history_used": history_used,
+            "use_web_search": bool(strategy.get("use_web_search")),
+            "reason": strategy.get("reason", ""),
+            "usage": strategy.get("usage", default_usage),
         }
 
     @staticmethod
@@ -210,31 +212,20 @@ class ResearchAgent:
 
     def _execute_tasks_with_browser(self, tasks, result_limit):
         extracted_sources = []
-        attempts = 0
+        selected_tasks = tasks[:result_limit]
+        max_workers = min(len(selected_tasks), result_limit) or 1
 
-        with AgentCoreBrowserSession() as session:
-            for task in tasks:
-                if attempts >= result_limit:
-                    break
-                if len(extracted_sources) >= EXTRACTION_SUCCESS_TARGET:
-                    LOGGER.info(
-                        "Reached extraction success target with %s websites; stopping early",
-                        len(extracted_sources),
-                    )
-                    break
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {
+                executor.submit(self._run_browser_task, task): task
+                for task in selected_tasks
+            }
 
-                attempts += 1
-                LOGGER.info(
-                    "Running extraction task %s for %s (attempt %s/%s)",
-                    task.task_id,
-                    task.url,
-                    attempts,
-                    result_limit,
-                )
-                task.status = "running"
-
+            for future in as_completed(futures):
+                task = futures[future]
                 try:
-                    extracted = self.browse_extract_tool.run_with_session(task.url, session)
+                    extracted = future.result()
                     task.status = "completed"
                     task.content = extracted["content"]
                     task.extraction_method = extracted["extraction_method"]
@@ -244,12 +235,25 @@ class ResearchAgent:
                         task.task_id,
                         task.extraction_method,
                     )
+                    if len(extracted_sources) >= EXTRACTION_SUCCESS_TARGET:
+                        LOGGER.info(
+                            "Reached extraction success target with %s websites; stopping early",
+                            len(extracted_sources),
+                        )
+                        break
                 except Exception as error:
                     task.status = "failed"
                     task.error = str(error)
                     LOGGER.warning("Task %s failed for %s: %s", task.task_id, task.url, error)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
-        return extracted_sources
+        return extracted_sources[:EXTRACTION_SUCCESS_TARGET]
+
+    def _run_browser_task(self, task):
+        LOGGER.info("Running extraction task %s for %s", task.task_id, task.url)
+        task.status = "running"
+        return self.browse_extract_tool.run(task.url)
 
     @staticmethod
     def _build_fallback_sources(tasks):
@@ -301,3 +305,4 @@ class ResearchAgent:
                 {"role": "assistant", "content": answer},
             ],
         )
+
