@@ -19,9 +19,6 @@ class BrowseExtractTool:
     def run(self, url):
         return self.extractor.extract(url)
 
-    def run_with_session(self, url, session):
-        return self.extractor.extract_with_session(url, session)
-
 
 class SummarizeTool:
     def __init__(self):

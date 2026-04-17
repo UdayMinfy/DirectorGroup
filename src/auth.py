@@ -26,14 +26,6 @@ def extract_bearer_token(event):
     return token.strip()
 
 
-def extract_user_email(token):
-    claims = extract_jwt_claims(token)
-    user_email = (claims.get("email") or claims.get("username") or claims.get("cognito:username") or "").strip()
-    if not user_email:
-        raise ValueError("JWT does not contain a user email or username claim.")
-    return user_email
-
-
 def extract_jwt_claims(token):
     claims = _decode_jwt(token)
     token_use = (claims.get("token_use") or "").strip().lower()

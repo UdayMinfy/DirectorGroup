@@ -44,9 +44,6 @@ class BrowserExtractor:
         with AgentCoreBrowserSession() as session:
             return self._extract_with_browser_session(url, session)
 
-    def extract_with_session(self, url, session):
-        return self._extract_with_browser_session(url, session)
-
     def _extract_with_browser_session(self, url, session):
         page = session.new_page()
         try:
@@ -159,4 +156,3 @@ class BrowserExtractor:
 
         condensed = " ".join(cleaned_segments)
         return condensed[:MAX_SOURCE_CHARS]
-

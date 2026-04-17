@@ -25,16 +25,10 @@ Resources:
           MAX_SOURCE_CHARS: 6000
           REQUEST_TIMEOUT_SECONDS: 8
           SEARCH_TIMEZONE: Asia/Kolkata
-          DB_HOST: host.docker.internal
-          DB_PORT: 5433
-          DB_NAME: ecommerce_db
-          DB_USER: ecommerce_user
-          DB_PASSWORD: ecommerce_pass
           JWT_VALIDATION_ENABLED: true
           COGNITO_REGION: ap-southeast-2
           COGNITO_USER_POOL_ID: "ap-southeast-2_gsJ5J02mu"
           COGNITO_APP_CLIENT_ID: "v218rbfdovpt96f0uurquohib"
-          HARDCODED_USER_EMAIL: "Dillip.Mohanty@directed.com.au"
           TOKEN_BUDGETS_TABLE: DirectedGroup-UserTokenBudgets
           DEFAULT_DAILY_TOKEN_LIMIT: 0
           DEFAULT_MONTHLY_TOKEN_LIMIT: 0
@@ -78,5 +72,6 @@ Outputs:
   ChatFunctionUrl:
     Description: Direct Lambda Function URL for chat requests
     Value: !GetAtt ChatFunctionUrl.FunctionUrl
+
 
 

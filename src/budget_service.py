@@ -52,9 +52,6 @@ class TokenBudgetService:
             raise UserNotFoundError(f"No token budget record found for {user_email}.")
         return item
 
-    def get_user_budget(self, user_email):
-        return self._get_user_or_raise(user_email)
-
     def validate_request(self, user_email, required_tokens=None):
         item = self._get_user_or_raise(user_email)
         status = str(item.get("status") or "").strip().lower()
