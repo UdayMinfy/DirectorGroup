@@ -3,7 +3,7 @@ import json
 import logging
 from uuid import uuid4
 
-from agent import ResearchAgent
+from simplified_agent import SimplifiedResearchAgent
 from auth import AuthenticationError, extract_bearer_token, validate_access_token
 from budget_service import AccountInactiveError, BudgetExceededError, TokenBudgetService, UserNotFoundError
 from config import JWT_VALIDATION_ENABLED
@@ -12,7 +12,7 @@ from config import JWT_VALIDATION_ENABLED
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
-agent = ResearchAgent()
+agent = SimplifiedResearchAgent()
 budget_service = TokenBudgetService()
 
 DEFAULT_HEADERS = {

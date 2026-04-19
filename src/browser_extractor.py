@@ -78,7 +78,8 @@ class BrowserExtractor:
         )
 
     def _load_page_text(self, page, url):
-        page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT_SECONDS * 1000)
+        # Increased timeout to 15 seconds for better reliability with slow websites
+        page.goto(url, wait_until="domcontentloaded", timeout=15000)  # 15 seconds
         page.wait_for_timeout(250)
         self._expand_page(page)
 
