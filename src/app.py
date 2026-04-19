@@ -85,14 +85,7 @@ def lambda_handler(event, context):
 
     payload = _parse_event(event)
     prompt = str(payload.get("prompt") or "").strip()
-    urls = payload.get("urls") or []
     session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
-
-    if isinstance(urls, str):
-        urls = [urls]
-    elif not isinstance(urls, list):
-        urls = []
-    urls = [url.strip() for url in urls if isinstance(url, str) and url.strip()]
 
     if not prompt:
         return _build_response(400, {"error": "Request payload must include a non-empty 'prompt'."})
@@ -104,10 +97,7 @@ def lambda_handler(event, context):
         LOGGER.info("Chat request: user=%s", user_email)
         budget_snapshot = budget_service.validate_request(user_email)
 
-        if urls:
-            result = agent.run(prompt, urls=urls, user_id=user_email, session_id=session_id)
-        else:
-            result = agent.run(prompt, user_id=user_email, session_id=session_id)
+        result = agent.run(prompt, user_id=user_email, session_id=session_id)
 
         usage = result.get("usage", {})
         budget_after = budget_service.track_usage(
