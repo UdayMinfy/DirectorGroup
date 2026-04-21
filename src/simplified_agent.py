@@ -3,6 +3,7 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import boto3
 import requests
@@ -168,6 +169,37 @@ class SimplifiedResearchAgent:
                 "model_id": BEDROCK_MODEL_ID,
             }
 
+    @staticmethod
+    def _is_content_url(url):
+        if not url:
+            return False
+
+        try:
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+            path = (parsed.path or "").lower()
+        except Exception:
+            return False
+
+        blocked_domains = {
+            "youtube.com",
+            "youtu.be",
+            "vimeo.com",
+            "dailymotion.com",
+            "twitter.com",
+            "facebook.com",
+            "instagram.com",
+            "tiktok.com",
+        }
+
+        if any(domain in hostname for domain in blocked_domains):
+            return False
+
+        if path.startswith("/watch") or "/watch" in path or path.startswith("/video") or "/video/" in path or "/embed" in path:
+            return False
+
+        return True
+
     def _fetch_web_content(self, prompt):
         """Fetch content from max 2 successful URLs using Tavily (try up to 10 URLs)."""
         if not TAVILY_API_KEY:
@@ -193,8 +225,13 @@ class SimplifiedResearchAgent:
 
             urls = [result["url"] for result in search_results.get("results", [])[:10]]
             LOGGER.info("Tavily returned %d URLs for query: %s", len(urls), prompt[:50])
+            LOGGER.info("Tavily URLs: %s", urls)
 
-            if not urls:
+            filtered_urls = [url for url in urls if self._is_content_url(url)]
+            LOGGER.info("Filtered URLs: %d out of %d", len(filtered_urls), len(urls))
+            LOGGER.info("Filtered URLs: %s", filtered_urls)
+
+            if not filtered_urls:
                 return ""
 
             # Try scraping all URLs in parallel, stop after 2 successful extractions
@@ -203,7 +240,7 @@ class SimplifiedResearchAgent:
             successful_count = 0
 
             with ThreadPoolExecutor(max_workers=10) as executor:  # Increased workers for 10 URLs
-                future_to_url = {executor.submit(self._extract_url_content, url): url for url in urls}
+                future_to_url = {executor.submit(self._extract_url_content, url): url for url in filtered_urls}
 
                 for future in as_completed(future_to_url):
                     attempted_count += 1
