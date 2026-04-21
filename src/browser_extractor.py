@@ -218,18 +218,20 @@ class BrowserExtractor:
         seen = set()
 
         for segment in segments:
+            # Step 1: Remove extra spaces
             normalized = " ".join(segment.split()).strip()
-            if len(normalized) < 40:
+            
+            # Skip empty segments
+            if not normalized:
                 continue
 
+            # Step 2: Check for noise patterns
             lowered = normalized.lower()
             if any(pattern in lowered for pattern in NOISE_PATTERNS):
                 continue
+            
+            # Step 3: Skip duplicates
             if normalized in seen:
-                continue
-
-            alpha_ratio = sum(char.isalpha() for char in normalized) / max(len(normalized), 1)
-            if alpha_ratio < 0.6:
                 continue
 
             seen.add(normalized)
