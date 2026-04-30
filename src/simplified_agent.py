@@ -14,9 +14,15 @@ from chat_session_store import ChatSessionStore
 from config import (
     BEDROCK_MODEL_ID,
     BEDROCK_REGION,
+    LITELLM_TOKENIZER_MODEL,
     REQUEST_TIMEOUT_SECONDS,
     TAVILY_API_KEY,
 )
+
+try:
+    from litellm import token_counter
+except ImportError:
+    token_counter = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -315,7 +321,7 @@ class SimplifiedResearchAgent:
         }
 
     def _invoke_bedrock(self, prompt, operation_name, system_prompt):
-        """Invoke Bedrock model."""
+        """Invoke Bedrock model and return LiteLLM-based usage counts."""
         try:
             response = self.client.converse(
                 modelId=BEDROCK_MODEL_ID,
@@ -323,18 +329,65 @@ class SimplifiedResearchAgent:
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
             )
 
-            usage = response.get("usage", {})
             output_text = self._extract_text(response)
+            usage = self._build_usage(system_prompt, prompt, output_text)
 
-            return output_text, {
-                "input_tokens": usage.get("inputTokens", 0),
-                "output_tokens": usage.get("outputTokens", 0),
-                "total_tokens": usage.get("totalTokens", 0),
-            }
+            return output_text, usage
 
         except (ClientError, BotoCoreError) as error:
             LOGGER.exception("Bedrock %s call failed", operation_name)
             raise RuntimeError(f"Bedrock {operation_name} call failed: {error}") from error
+
+    def _build_usage(self, system_prompt, user_prompt, output_text):
+        """Count tokens using LiteLLM token_counter function."""
+        input_tokens = self._count_tokens_for_input(system_prompt, user_prompt)
+        output_tokens = self._count_tokens_for_output(output_text)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+
+    def _count_tokens_for_input(self, system_prompt, user_prompt):
+        """Count input tokens (system + user prompt) using LiteLLM."""
+        if token_counter is None:
+            LOGGER.warning("LiteLLM token_counter unavailable; falling back to zero token count")
+            return 0
+
+        try:
+            # Build messages format for token_counter
+            messages = [{"role": "user", "content": user_prompt}]
+            input_tokens = token_counter(
+                model=LITELLM_TOKENIZER_MODEL,
+                messages=messages,
+            )
+            # Add system prompt tokens
+            if system_prompt:
+                system_tokens = token_counter(
+                    model=LITELLM_TOKENIZER_MODEL,
+                    text=system_prompt,
+                )
+                input_tokens += system_tokens
+            return input_tokens
+        except Exception as error:
+            LOGGER.warning("LiteLLM input token counting failed: %s", error)
+            return 0
+
+    def _count_tokens_for_output(self, output_text):
+        """Count output tokens using LiteLLM."""
+        if token_counter is None:
+            LOGGER.warning("LiteLLM token_counter unavailable; falling back to zero token count")
+            return 0
+
+        try:
+            output_tokens = token_counter(
+                model=LITELLM_TOKENIZER_MODEL,
+                text=output_text,
+            )
+            return output_tokens
+        except Exception as error:
+            LOGGER.warning("LiteLLM output token counting failed: %s", error)
+            return 0
 
     @staticmethod
     def _extract_text(response):

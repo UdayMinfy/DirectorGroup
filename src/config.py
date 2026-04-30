@@ -17,6 +17,7 @@ def _getboolenv(name, default):
 
 
 BEDROCK_MODEL_ID = _getenv("BEDROCK_MODEL_ID", "au.anthropic.claude-sonnet-4-5-20250929-v1:0")
+LITELLM_TOKENIZER_MODEL = _getenv("LITELLM_TOKENIZER_MODEL", "BEDROCK_MODEL_ID")
 BEDROCK_REGION = _getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "ap-southeast-2"))
 JWT_VALIDATION_ENABLED = _getboolenv("JWT_VALIDATION_ENABLED", True)
 COGNITO_REGION = _getenv("COGNITO_REGION", BEDROCK_REGION)
