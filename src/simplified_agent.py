@@ -216,7 +216,7 @@ class SimplifiedResearchAgent:
                     "search_depth": "basic",
                     "include_answer": False,
                     "include_raw_content": False,
-                    "max_results": 10,  # Increased from 2 to 10
+                    "max_results": 10,
                 },
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
@@ -239,7 +239,7 @@ class SimplifiedResearchAgent:
             attempted_count = 0
             successful_count = 0
 
-            with ThreadPoolExecutor(max_workers=10) as executor:  # Increased workers for 10 URLs
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_url = {executor.submit(self._extract_url_content, url): url for url in filtered_urls}
 
                 for future in as_completed(future_to_url):
@@ -251,7 +251,7 @@ class SimplifiedResearchAgent:
                         if content:
                             successful_contents.append(content)
                             successful_count += 1
-                            LOGGER.info("✅ Successfully extracted content from %s (%d/%d successful)",
+                            LOGGER.info("Successfully extracted content from %s (%d/%d successful)",
                                        url, successful_count, attempted_count)
 
                             # Stop after 2 successful extractions
@@ -263,7 +263,7 @@ class SimplifiedResearchAgent:
                                         remaining_future.cancel()
                                 break
                         else:
-                            LOGGER.info("❌ Failed to extract content from %s", url)
+                            LOGGER.info("Failed to extract content from %s", url)
 
                     except Exception as e:
                         LOGGER.warning("Exception extracting from %s: %s", url, e)
