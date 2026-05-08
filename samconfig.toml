@@ -7,7 +7,7 @@ s3_prefix = "directorgroup"
 confirm_changeset = true
 capabilities = "CAPABILITY_IAM"
 disable_rollback = true
-image_repositories = []
+image_repositories = ["ChatFunctionV2=435415984578.dkr.ecr.ap-southeast-2.amazonaws.com/directorgroup1beb86d5/chatfunctionv292d75211repo"]
 
 [default.global.parameters]
 region = "ap-southeast-2"

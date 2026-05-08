@@ -1,6 +1,7 @@
 import logging
 from functools import lru_cache
 
+import boto3
 import jwt
 from jwt import PyJWKClient
 
@@ -51,6 +52,24 @@ def validate_access_token(token):
     return {"claims": claims}
 
 
+def get_user_email_from_token(token):
+    """Call Cognito GetUser API using the access token to retrieve the verified email."""
+    try:
+        client = _cognito_client()
+        response = client.get_user(AccessToken=token)
+        attributes = {attr["Name"]: attr["Value"] for attr in response.get("UserAttributes", [])}
+        email = attributes.get("email", "").strip()
+        if not email:
+            raise AuthenticationError("Email attribute not found in Cognito user profile.")
+        LOGGER.info("Retrieved email from Cognito for user: %s", response.get("Username"))
+        return email
+    except AuthenticationError:
+        raise
+    except Exception as error:
+        LOGGER.warning("Failed to retrieve user email from Cognito: %s", error)
+        raise AuthenticationError("Failed to retrieve user profile from Cognito.") from error
+
+
 def _decode_jwt(token):
     issuer = _issuer()
     jwks_client = _jwks_client()
@@ -72,6 +91,11 @@ def _decode_jwt(token):
 @lru_cache(maxsize=1)
 def _jwks_client():
     return PyJWKClient(_jwks_url())
+
+
+@lru_cache(maxsize=1)
+def _cognito_client():
+    return boto3.client("cognito-idp", region_name=COGNITO_REGION)
 
 
 def _issuer():

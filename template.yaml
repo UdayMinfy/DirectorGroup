@@ -2,33 +2,35 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Resources:
-  ChatFunction:
+  ChatFunctionV2:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/
-      Handler: app.lambda_handler
-      Runtime: python3.12
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.lambda_handler"]
       Timeout: 120
       MemorySize: 1024
       Environment:
         Variables:
           BEDROCK_REGION: ap-southeast-2
           BEDROCK_MODEL_ID: au.anthropic.claude-sonnet-4-5-20250929-v1:0
+          LITELLM_TOKENIZER_MODEL: claude-3-sonnet
           BROWSER_REGION: ap-southeast-2
           BROWSER_IDENTIFIER: DirectorGroup-aqScKjlUJn
-          SEARCH_API_PROVIDER: tavily
-          TAVILY_API_KEY: ""
-          SEARCH_RESULT_LIMIT: 3
-          SEARCH_CANDIDATE_LIMIT: 3
-          USE_TAVILY_RESULT_ORDER: true
+          TAVILY_API_KEY: "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"
           MAX_PAGE_CHARS: 18000
           MAX_SOURCE_CHARS: 6000
+          MAX_PROMPT_LENGTH: 4000
           REQUEST_TIMEOUT_SECONDS: 8
-          SEARCH_TIMEZONE: Asia/Kolkata
-          JWT_VALIDATION_ENABLED: true
+          JWT_ISSUER: ""
+          JWT_JWKS_URL: ""
           COGNITO_REGION: ap-southeast-2
           COGNITO_USER_POOL_ID: "ap-southeast-2_gsJ5J02mu"
           COGNITO_APP_CLIENT_ID: "v218rbfdovpt96f0uurquohib"
+          CHAT_SESSIONS_TABLE: ChatSessions
+          DYNAMODB_REGION: ap-southeast-2
+          MAX_HISTORY_MESSAGES: 12
+          MAX_HISTORY_CHARS: 6000
           TOKEN_BUDGETS_TABLE: DirectedGroup-UserTokenBudgets
           DEFAULT_DAILY_TOKEN_LIMIT: 0
           DEFAULT_MONTHLY_TOKEN_LIMIT: 0
@@ -67,11 +69,18 @@ Resources:
               Resource:
                 - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/DirectedGroup-UserTokenBudgets
                 - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/ChatSessions
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+              Resource: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/ap-southeast-2_gsJ5J02mu
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
 
 Outputs:
-  ChatFunctionUrl:
+  ChatFunctionV2Url:
     Description: Direct Lambda Function URL for chat requests
-    Value: !GetAtt ChatFunctionUrl.FunctionUrl
+    Value: !GetAtt ChatFunctionV2Url.FunctionUrl
 
 
 

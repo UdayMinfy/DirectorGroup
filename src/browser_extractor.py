@@ -84,14 +84,14 @@ class BrowserExtractor:
 
     def _load_page_text(self, page, url):
         # Load initial page
-        page.goto(url, wait_until="domcontentloaded", timeout=8000)
-        page.wait_for_timeout(500)
+        page.goto(url, wait_until="domcontentloaded", timeout=4000)
+        page.wait_for_timeout(200)
 
         # Wait for basic content
         try:
             page.wait_for_function(
                 "document.body && document.body.innerText && document.body.innerText.length > 200",
-                timeout=2000,
+                timeout=500,
             )
         except Exception:
             pass

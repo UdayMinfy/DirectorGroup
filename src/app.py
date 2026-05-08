@@ -4,9 +4,9 @@ import logging
 from uuid import uuid4
 
 from simplified_agent import SimplifiedResearchAgent
-from auth import AuthenticationError, extract_bearer_token, validate_access_token
-from budget_service import AccountInactiveError, BudgetExceededError, TokenBudgetService, UserNotFoundError
-from config import JWT_VALIDATION_ENABLED
+from auth import AuthenticationError, extract_bearer_token, validate_access_token, get_user_email_from_token
+from budget_service import TokenBudgetService
+from config import IS_LOCAL_SAM, MAX_PROMPT_LENGTH
 
 
 LOGGER = logging.getLogger()
@@ -17,9 +17,6 @@ budget_service = TokenBudgetService()
 
 DEFAULT_HEADERS = {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Authorization,Content-Type,X-User-Email",
-    "Access-Control-Allow-Methods": "OPTIONS,POST",
 }
 
 
@@ -42,96 +39,118 @@ def _parse_event(event):
     return event
 
 
-def _build_response(status_code, payload, extra_headers=None):
-    headers = dict(DEFAULT_HEADERS)
-    if extra_headers:
-        headers.update(extra_headers)
+def _build_response(status_code, error_code, message, request_id, extra=None):
+    body = {
+        "error": error_code,
+        "message": message,
+        "request_id": request_id,
+    }
+    if extra:
+        body.update(extra)
     return {
         "statusCode": status_code,
-        "headers": headers,
+        "headers": DEFAULT_HEADERS,
+        "body": json.dumps(body),
+    }
+
+
+def _build_success_response(payload):
+    return {
+        "statusCode": 200,
+        "headers": DEFAULT_HEADERS,
         "body": json.dumps(payload),
     }
 
 
-def _is_http_event(event):
-    request_context = (event or {}).get("requestContext") or {}
-    return isinstance(request_context.get("http"), dict)
+def _validate_jwt(event):
+    """Validate JWT token on every request. Cannot be bypassed in production.
+    Only skipped when running locally via SAM (IS_LOCAL_SAM=true).
+    Returns the raw token string for downstream use.
+    """
+    if IS_LOCAL_SAM:
+        LOGGER.warning("JWT validation skipped — local SAM environment only")
+        return None
 
-
-def extract_user_email(event, payload):
-    if JWT_VALIDATION_ENABLED and _is_http_event(event):
-        try:
-            token = extract_bearer_token(event)
-            validate_access_token(token)
-            LOGGER.info("JWT validated successfully")
-        except (AuthenticationError, ValueError) as error:
-            raise AuthenticationError(str(error)) from error
-
-    user_email = str((payload or {}).get("email") or "").strip()
-    if not user_email:
-        user_email = str((payload or {}).get("user_id") or "").strip()
-    if not user_email:
-        raise AuthenticationError("Missing authenticated user email in payload.")
-
-    budget_service._get_user_or_raise(user_email)
-    return user_email
+    try:
+        token = extract_bearer_token(event)
+        validate_access_token(token)
+        LOGGER.info("JWT validated successfully")
+        return token
+    except AuthenticationError:
+        raise
+    except ValueError:
+        raise AuthenticationError("Invalid or expired authorization token.")
 
 
 def lambda_handler(event, context):
-    http_method = (((event or {}).get("requestContext") or {}).get("http") or {}).get("method", "")
-    if http_method == "OPTIONS":
-        LOGGER.info("OPTIONS preflight request allowed")
-        return _build_response(200, {"ok": True})
-
-    payload = _parse_event(event)
-    prompt = str(payload.get("prompt") or "").strip()
-    session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
-
-    if not prompt:
-        return _build_response(400, {"error": "Request payload must include a non-empty 'prompt'."})
-
     request_id = str(uuid4())
 
+    # ── Step 1: JWT Validation (always first) ──────────────────────────────
     try:
-        user_email = extract_user_email(event, payload)
-        LOGGER.info("Chat request: user=%s", user_email)
-        budget_snapshot = budget_service.validate_request(user_email)
+        token = _validate_jwt(event)
+    except AuthenticationError as error:
+        LOGGER.warning("Auth failed: %s", error)
+        return _build_response(401, "Unauthorized", str(error), request_id)
+
+    # ── Step 2: Get user email from Cognito ────────────────────────────────
+    if IS_LOCAL_SAM:
+        # For local testing, allow email from payload
+        payload = _parse_event(event)
+        user_email = str((payload or {}).get("email") or "test@example.com").strip()
+    else:
+        try:
+            user_email = get_user_email_from_token(token)
+        except AuthenticationError as error:
+            LOGGER.warning("Failed to retrieve user email: %s", error)
+            return _build_response(401, "Unauthorized", str(error), request_id)
+
+    # ── Step 3: Parse request body ─────────────────────────────────────────
+    payload = _parse_event(event)
+
+    # ── Step 4: Validate prompt ────────────────────────────────────────────
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        return _build_response(
+            400, "Bad Request",
+            "Request body must include a non-empty 'prompt' field.",
+            request_id,
+        )
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        return _build_response(
+            400, "Bad Request",
+            f"Prompt exceeds maximum allowed length of {MAX_PROMPT_LENGTH} characters.",
+            request_id,
+        )
+
+    session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
+
+    # ── Step 5: Process request ────────────────────────────────────────────
+    try:
+        LOGGER.info("Chat request: user=%s session=%s", user_email, session_id)
 
         result = agent.run(prompt, user_id=user_email, session_id=session_id)
 
         usage = result.get("usage", {})
-        budget_after = budget_service.track_usage(
+        budget_service.track_usage(
             user_email=user_email,
             input_tokens=usage.get("input_tokens", 0),
             output_tokens=usage.get("output_tokens", 0),
         )
-    except AuthenticationError as error:
-        return _build_response(401, {"error": str(error), "request_id": request_id})
-    except UserNotFoundError as error:
-        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
-    except AccountInactiveError as error:
-        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
-    except BudgetExceededError as error:
-        return _build_response(error.status_code, {"error": str(error), "request_id": request_id})
     except Exception as error:
-        LOGGER.exception("Research workflow failed")
+        LOGGER.exception("Research workflow failed for user=%s request_id=%s", user_email, request_id)
         return _build_response(
-            500,
-            {
-                "error": str(error),
-                "request_id": request_id,
-                "session_id": session_id,
-            },
+            500, "Internal Server Error",
+            "An unexpected error occurred. Please try again later.",
+            request_id,
+            extra={"session_id": session_id},
         )
 
-    response_payload = {
+    return _build_success_response({
         "answer": result.get("answer", ""),
         "usage": usage,
         "user_id": user_email,
         "session_id": result.get("session_id", session_id),
         "history_used": result.get("history_used", False),
-        "budget": budget_after,
-        "budget_before": budget_snapshot,
         "streaming_supported": False,
-    }
-    return _build_response(200, response_payload)
+        "request_id": request_id,
+    })

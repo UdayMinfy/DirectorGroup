@@ -47,6 +47,14 @@ Bias:
 - Only set use_web_search = true when external verification or current information is clearly needed.
 Do not answer the user. Output JSON only."""
 
+SEARCH_QUERY_SYSTEM_PROMPT = """You are a search query rewriter.
+Given the last 2 messages from a conversation and the user's latest follow-up, rewrite it as a clear, standalone web search query.
+Rules:
+- Resolve all pronouns and references (it, that, this, they, him, her) using the conversation context.
+- Output only the search query. No explanation, no punctuation at the end, no quotes.
+- Keep it concise — 5 to 12 words maximum.
+- Make it specific enough to return useful web results."""
+
 ANSWER_SYSTEM_PROMPT = """You are a helpful, polished conversational assistant.
 Answer style:
 - Start with the direct answer.
@@ -86,6 +94,7 @@ class SimplifiedResearchAgent:
         # Step 2: Gather data based on intent
         history_text = ""
         web_content = ""
+        search_query = prompt
 
         if use_history:
             history_text = self.chat_session_store.build_history_text(user_id, session_id)
@@ -95,7 +104,13 @@ class SimplifiedResearchAgent:
                 LOGGER.info("No history found for session %s", session_id)
 
         if use_web_search:
-            web_content = self._fetch_web_content(prompt)
+            # If history is also needed, rewrite the search query using last 2 messages for better context
+            if use_history and history_text:
+                search_query = self._build_search_query(history_text, prompt)
+                LOGGER.info("Rewritten search query: %s", search_query)
+            else:
+                search_query = prompt
+            web_content = self._fetch_web_content(search_query)
             if web_content:
                 LOGGER.info("Fetched web content (%d chars)", len(web_content))
             else:
@@ -122,6 +137,7 @@ class SimplifiedResearchAgent:
             "user_id": user_id,
             "session_id": session_id,
             "history_used": bool(history_text),
+            "search_query_used": search_query if use_web_search else None,
         }
 
     def _determine_intent(self, prompt):
@@ -205,6 +221,29 @@ class SimplifiedResearchAgent:
             return False
 
         return True
+
+    def _build_search_query(self, history_text, prompt):
+        """Rewrite the user prompt as a standalone search query using last 2 history messages."""
+        # Extract last 2 messages from history
+        lines = [line for line in history_text.strip().splitlines() if line.strip()]
+        last_two = "\n".join(lines[-2:]) if len(lines) >= 2 else "\n".join(lines)
+
+        full_prompt = "\n\n".join([
+            "Last 2 conversation messages:",
+            last_two,
+            f"User follow-up: {prompt}",
+            "Rewrite the follow-up as a standalone web search query.",
+        ])
+
+        try:
+            output_text, _ = self._invoke_bedrock(full_prompt, "search query rewrite", SEARCH_QUERY_SYSTEM_PROMPT)
+            rewritten = output_text.strip().strip('"').strip("'")
+            if rewritten:
+                return rewritten
+        except Exception as e:
+            LOGGER.warning("Search query rewrite failed, using original prompt: %s", e)
+
+        return prompt
 
     def _fetch_web_content(self, prompt):
         """Fetch content from max 2 successful URLs using Tavily (try up to 10 URLs)."""
