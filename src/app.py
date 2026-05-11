@@ -39,11 +39,10 @@ def _parse_event(event):
     return event
 
 
-def _build_response(status_code, error_code, message, request_id, extra=None):
+def _build_response(status_code, error_code, message, extra=None):
     body = {
         "error": error_code,
         "message": message,
-        "request_id": request_id,
     }
     if extra:
         body.update(extra)
@@ -90,7 +89,7 @@ def lambda_handler(event, context):
         token = _validate_jwt(event)
     except AuthenticationError as error:
         LOGGER.warning("Auth failed: %s", error)
-        return _build_response(401, "Unauthorized", str(error), request_id)
+        return _build_response(401, "Unauthorized", str(error))
 
     # ── Step 2: Get user email from Cognito ────────────────────────────────
     if IS_LOCAL_SAM:
@@ -102,7 +101,7 @@ def lambda_handler(event, context):
             user_email = get_user_email_from_token(token)
         except AuthenticationError as error:
             LOGGER.warning("Failed to retrieve user email: %s", error)
-            return _build_response(401, "Unauthorized", str(error), request_id)
+            return _build_response(401, "Unauthorized", str(error))
 
     # ── Step 3: Parse request body ─────────────────────────────────────────
     payload = _parse_event(event)
@@ -113,13 +112,11 @@ def lambda_handler(event, context):
         return _build_response(
             400, "Bad Request",
             "Request body must include a non-empty 'prompt' field.",
-            request_id,
         )
     if len(prompt) > MAX_PROMPT_LENGTH:
         return _build_response(
             400, "Bad Request",
             f"Prompt exceeds maximum allowed length of {MAX_PROMPT_LENGTH} characters.",
-            request_id,
         )
 
     session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
@@ -141,7 +138,6 @@ def lambda_handler(event, context):
         return _build_response(
             500, "Internal Server Error",
             "An unexpected error occurred. Please try again later.",
-            request_id,
             extra={"session_id": session_id},
         )
 
@@ -152,5 +148,4 @@ def lambda_handler(event, context):
         "session_id": result.get("session_id", session_id),
         "history_used": result.get("history_used", False),
         "streaming_supported": False,
-        "request_id": request_id,
     })

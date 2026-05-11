@@ -42,7 +42,7 @@ Resources:
         InvokeMode: BUFFERED
         Cors:
           AllowOrigins:
-            - "*"
+            - "https://d3opfbhb4e7hs6.cloudfront.net"
           AllowHeaders:
             - Authorization
             - Content-Type
