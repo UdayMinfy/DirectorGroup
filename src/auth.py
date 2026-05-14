@@ -15,18 +15,23 @@ class AuthenticationError(Exception):
     pass
 
 
+#def extract_bearer_token(event):
+#    headers = (event or {}).get("headers") or {}
+#    token = (headers.get("x-user-token") or headers.get("X-User-Token") or "").strip()
+#    if not token:
+#        raise AuthenticationError("Missing x-user-token header.")
+#    return token
+
 def extract_bearer_token(event):
     headers = (event or {}).get("headers") or {}
-    authorization = headers.get("authorization") or headers.get("Authorization") or ""
-    if not authorization:
-        raise AuthenticationError("Missing Authorization header.")
-
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise AuthenticationError("Authorization header must use Bearer token format.")
-    return token.strip()
-
-
+    token = (headers.get("x-user-token") or headers.get("X-User-Token") or "").strip()
+    if not token:
+        raise AuthenticationError("Missing x-user-token header.")
+    # Remove "Bearer " prefix if present
+    if token.startswith("Bearer "):
+        token = token[7:]
+    return token
+    
 def extract_jwt_claims(token):
     claims = _decode_jwt(token)
     token_use = (claims.get("token_use") or "").strip().lower()

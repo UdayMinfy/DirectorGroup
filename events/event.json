@@ -1,5 +1,12 @@
 {
-  "prompt": "hi",
-  "email": "Dhanunjaya.Varma@directed.com.au",
-  "session_id": "37738e80-ddf9-4958-a474-634c12543177"
+  "requestContext": {
+    "http": {
+      "method": "POST"
+    }
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"prompt\": \"What is the capital of France?\", \"email\": \"test@example.com\", \"session_id\": \"test-123\"}",
+  "isBase64Encoded": false
 }

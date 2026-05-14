@@ -15,7 +15,13 @@ LOGGER.setLevel(logging.INFO)
 agent = SimplifiedResearchAgent()
 budget_service = TokenBudgetService()
 
-DEFAULT_HEADERS = {
+SSE_HEADERS = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+JSON_HEADERS = {
     "Content-Type": "application/json",
 }
 
@@ -39,26 +45,18 @@ def _parse_event(event):
     return event
 
 
-def _build_response(status_code, error_code, message, extra=None):
-    body = {
-        "error": error_code,
-        "message": message,
-    }
-    if extra:
-        body.update(extra)
+def _error_response(status_code, error_code, message):
+    """Return a non-streaming error response."""
     return {
         "statusCode": status_code,
-        "headers": DEFAULT_HEADERS,
-        "body": json.dumps(body),
+        "headers": JSON_HEADERS,
+        "body": json.dumps({"error": error_code, "message": message}),
     }
 
 
-def _build_success_response(payload):
-    return {
-        "statusCode": 200,
-        "headers": DEFAULT_HEADERS,
-        "body": json.dumps(payload),
-    }
+def _sse_error(message):
+    """Return an SSE-formatted error event string."""
+    return f"event: error\ndata: {json.dumps({'message': message})}\n\n"
 
 
 def _validate_jwt(event):
@@ -89,11 +87,10 @@ def lambda_handler(event, context):
         token = _validate_jwt(event)
     except AuthenticationError as error:
         LOGGER.warning("Auth failed: %s", error)
-        return _build_response(401, "Unauthorized", str(error))
+        return _error_response(401, "Unauthorized", str(error))
 
     # ── Step 2: Get user email from Cognito ────────────────────────────────
     if IS_LOCAL_SAM:
-        # For local testing, allow email from payload
         payload = _parse_event(event)
         user_email = str((payload or {}).get("email") or "test@example.com").strip()
     else:
@@ -101,7 +98,7 @@ def lambda_handler(event, context):
             user_email = get_user_email_from_token(token)
         except AuthenticationError as error:
             LOGGER.warning("Failed to retrieve user email: %s", error)
-            return _build_response(401, "Unauthorized", str(error))
+            return _error_response(401, "Unauthorized", str(error))
 
     # ── Step 3: Parse request body ─────────────────────────────────────────
     payload = _parse_event(event)
@@ -109,43 +106,25 @@ def lambda_handler(event, context):
     # ── Step 4: Validate prompt ────────────────────────────────────────────
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
-        return _build_response(
-            400, "Bad Request",
-            "Request body must include a non-empty 'prompt' field.",
-        )
+        return _error_response(400, "Bad Request", "Request body must include a non-empty 'prompt' field.")
     if len(prompt) > MAX_PROMPT_LENGTH:
-        return _build_response(
-            400, "Bad Request",
-            f"Prompt exceeds maximum allowed length of {MAX_PROMPT_LENGTH} characters.",
-        )
+        return _error_response(400, "Bad Request", f"Prompt exceeds maximum allowed length of {MAX_PROMPT_LENGTH} characters.")
 
     session_id = str(payload.get("session_id") or "").strip() or str(uuid4())
 
-    # ── Step 5: Process request ────────────────────────────────────────────
-    try:
-        LOGGER.info("Chat request: user=%s session=%s", user_email, session_id)
+    # ── Step 5: Stream response ────────────────────────────────────────────
+    LOGGER.info("Chat stream request: user=%s session=%s request_id=%s", user_email, session_id, request_id)
 
-        result = agent.run(prompt, user_id=user_email, session_id=session_id)
+    def generate():
+        try:
+            for sse_event in agent.run_stream(prompt, user_id=user_email, session_id=session_id):
+                yield sse_event
+        except Exception as error:
+            LOGGER.exception("Streaming failed for user=%s request_id=%s", user_email, request_id)
+            yield _sse_error("An unexpected error occurred. Please try again.")
 
-        usage = result.get("usage", {})
-        budget_service.track_usage(
-            user_email=user_email,
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
-        )
-    except Exception as error:
-        LOGGER.exception("Research workflow failed for user=%s request_id=%s", user_email, request_id)
-        return _build_response(
-            500, "Internal Server Error",
-            "An unexpected error occurred. Please try again later.",
-            extra={"session_id": session_id},
-        )
-
-    return _build_success_response({
-        "answer": result.get("answer", ""),
-        "usage": usage,
-        "user_id": user_email,
-        "session_id": result.get("session_id", session_id),
-        "history_used": result.get("history_used", False),
-        "streaming_supported": False,
-    })
+    return {
+        "statusCode": 200,
+        "headers": SSE_HEADERS,
+        "body": "".join(generate()),
+    }

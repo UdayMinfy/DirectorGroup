@@ -29,8 +29,7 @@ Resources:
           COGNITO_APP_CLIENT_ID: "v218rbfdovpt96f0uurquohib"
           CHAT_SESSIONS_TABLE: ChatSessions
           DYNAMODB_REGION: ap-southeast-2
-          MAX_HISTORY_MESSAGES: 12
-          MAX_HISTORY_CHARS: 6000
+          MAX_HISTORY_CHARS: 50000
           TOKEN_BUDGETS_TABLE: DirectedGroup-UserTokenBudgets
           DEFAULT_DAILY_TOKEN_LIMIT: 0
           DEFAULT_MONTHLY_TOKEN_LIMIT: 0
@@ -38,14 +37,20 @@ Resources:
           MODEL_INPUT_COST_PER_1K: 0
           MODEL_OUTPUT_COST_PER_1K: 0
       FunctionUrlConfig:
-        AuthType: NONE
-        InvokeMode: BUFFERED
+        AuthType: AWS_IAM
+        InvokeMode: RESPONSE_STREAM
         Cors:
           AllowOrigins:
             - "https://d3opfbhb4e7hs6.cloudfront.net"
+            - "http://localhost:5173"
+            - "http://localhost:3000"
           AllowHeaders:
-            - Authorization
-            - Content-Type
+            - content-type
+            - x-user-token
+            - authorization
+            - x-amz-date
+            - x-amz-security-token
+            - x-amz-content-sha256
           AllowMethods:
             - POST
       Policies:
@@ -76,6 +81,14 @@ Resources:
     Metadata:
       Dockerfile: Dockerfile
       DockerContext: .
+
+  ChatFunctionV2InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatFunctionV2
+      Action: lambda:InvokeFunctionUrl
+      Principal: arn:aws:iam::435415984578:role/service-role/directtech_identity_poolrole
+      FunctionUrlAuthType: AWS_IAM
 
 Outputs:
   ChatFunctionV2Url:

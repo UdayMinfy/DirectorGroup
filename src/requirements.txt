@@ -1,7 +1,5 @@
 boto3
 botocore
-requests
-beautifulsoup4
 playwright
 bedrock-agentcore
 PyJWT

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from config import CHAT_SESSIONS_TABLE, DYNAMODB_REGION, MAX_HISTORY_CHARS, MAX_HISTORY_MESSAGES
+from config import CHAT_SESSIONS_TABLE, DYNAMODB_REGION, MAX_HISTORY_CHARS
 
 
 LOGGER = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class ChatSessionStore:
             return ""
 
         lines = []
-        for message in messages[-MAX_HISTORY_MESSAGES:]:
+        for message in messages:
             role = (message.get("role") or message.get("sender") or "user").strip() or "user"
             content = (
                 message.get("content")

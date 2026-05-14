@@ -55,23 +55,30 @@ Rules:
 - Keep it concise — 5 to 12 words maximum.
 - Make it specific enough to return useful web results."""
 
-ANSWER_SYSTEM_PROMPT = """You are a helpful, polished conversational assistant.
+ANSWER_SYSTEM_PROMPT = """You are a helpful, knowledgeable conversational assistant. Your goal is to give thorough, well-explained answers that genuinely help the user understand the topic.
 Answer style:
-- Start with the direct answer.
-- Add brief explanation or examples only when useful.
-- Keep simple answers short and complex answers clear.
-- Write naturally, confidently, and conversationally.
+- Start with a clear direct answer, then expand with context, explanation, and relevant details.
+- Provide enough depth that the user walks away with a solid understanding — not just a one-liner.
+- For factual or technical topics, explain the why and how, not just the what.
+- Use examples, analogies, or comparisons where they help clarify.
+- For complex topics, break the answer into logical sections or steps.
+- Write naturally and conversationally — detailed but not dry or academic.
 Use of knowledge:
 - Use built-in knowledge for stable topics.
-- If web content is provided, prioritize and synthesize information from it for current/recent topics.
-- If retrieved content is provided, use it to answer questions about current events, scores, prices, or time-sensitive information.
-- Be transparent about data sources when appropriate.
+- If web content is provided, prioritize and synthesize it for current or recent topics.
+- Cite or reference sources when using retrieved web content.
 Formatting:
-- Make the answer easy to scan.
-- When helpful, use light visual markers like: ✓, •, 👍
-- Do not overuse symbols or make the response noisy.
+- Use bullet points, numbered lists, or headers when the answer has multiple parts or steps.
+- Bold key terms or important points to make them easy to scan.
+- Use light visual markers like ✓, •, or 👉 where they improve readability.
+- Aim for responses that are complete — avoid cutting off important context just to be brief.
 Follow-up:
-- Ask a short follow-up only if needed for clarity or if it genuinely helps the user continue."""
+- End with a relevant follow-up question or suggestion if it would genuinely help the user go deeper."""
+
+
+def _sse(event_type, data):
+    """Format a Server-Sent Event string."""
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 class SimplifiedResearchAgent:
@@ -80,18 +87,91 @@ class SimplifiedResearchAgent:
         self.chat_session_store = ChatSessionStore()
         self.browser_extractor = BrowserExtractor()
 
+    def run_stream(self, prompt, user_id="", session_id=""):
+        """Run the agent and yield SSE-formatted events for streaming."""
+
+        # Step 1: Fetch last 2 messages for intent context
+        last_two_messages = self._get_last_two_messages(user_id, session_id)
+
+        # Step 2: Determine intent using last 2 messages + current prompt
+        intent_result = self._determine_intent(prompt, last_two_messages)
+        use_history = intent_result["read_history"]
+        use_web_search = intent_result["use_web_search"]
+        LOGGER.info("Intent: use_history=%s, use_web_search=%s", use_history, use_web_search)
+
+        # Step 2: Gather data
+        history_text = ""
+        web_content = ""
+        search_query = prompt
+
+        if use_history:
+            history_text = self.chat_session_store.build_history_text(user_id, session_id)
+
+        if use_web_search:
+            yield _sse("status", {"message": "Searching the web..."})
+            if use_history and history_text:
+                search_query = self._build_search_query(history_text, prompt)
+            web_content = self._fetch_web_content(search_query)
+            if web_content:
+                yield _sse("status", {"message": "Analysing results..."})
+
+        # Step 3: Stream answer from Bedrock
+        full_answer = ""
+        # Start with intent detection token usage
+        usage = intent_result.get("usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+        try:
+            for chunk, final_usage in self._stream_answer(prompt, history_text, web_content):
+                if chunk:
+                    full_answer += chunk
+                    yield _sse("chunk", {"text": chunk})
+                if final_usage:
+                    # Add answer generation tokens to intent detection tokens
+                    usage = {
+                        "input_tokens": usage.get("input_tokens", 0) + final_usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0) + final_usage.get("output_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0) + final_usage.get("total_tokens", 0),
+                    }
+        except Exception:
+            LOGGER.exception("Streaming answer generation failed")
+            yield _sse("error", {"message": "An unexpected error occurred. Please try again."})
+            return
+
+        # Step 4: Store conversation turn
+        self._store_session_turn(user_id, session_id, prompt, full_answer)
+
+        # Step 5: Track usage
+        try:
+            from budget_service import TokenBudgetService
+            TokenBudgetService().track_usage(
+                user_email=user_id,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+            )
+        except Exception as e:
+            LOGGER.warning("Failed to track usage: %s", e)
+
+        # Step 6: Send final done event
+        yield _sse("done", {
+            "session_id": session_id,
+            "usage": usage,
+            "history_used": bool(history_text),
+            "search_query_used": search_query if use_web_search else None,
+        })
+
     def run(self, prompt, user_id="", session_id=""):
         LOGGER.info("Agent received prompt: %s", prompt)
 
-        # Step 1: Determine intent (use_history, use_web_search)
-        intent_result = self._determine_intent(prompt)
+        # Fetch last 2 messages for intent context
+        last_two_messages = self._get_last_two_messages(user_id, session_id)
+
+        intent_result = self._determine_intent(prompt, last_two_messages)
         use_history = intent_result["read_history"]
         use_web_search = intent_result["use_web_search"]
 
         LOGGER.info("Intent detection result: use_history=%s, use_web_search=%s, reason='%s'",
-                   use_history, use_web_search, intent_result.get("reason", ""))
+                    use_history, use_web_search, intent_result.get("reason", ""))
 
-        # Step 2: Gather data based on intent
         history_text = ""
         web_content = ""
         search_query = prompt
@@ -104,12 +184,9 @@ class SimplifiedResearchAgent:
                 LOGGER.info("No history found for session %s", session_id)
 
         if use_web_search:
-            # If history is also needed, rewrite the search query using last 2 messages for better context
             if use_history and history_text:
                 search_query = self._build_search_query(history_text, prompt)
                 LOGGER.info("Rewritten search query: %s", search_query)
-            else:
-                search_query = prompt
             web_content = self._fetch_web_content(search_query)
             if web_content:
                 LOGGER.info("Fetched web content (%d chars)", len(web_content))
@@ -118,10 +195,7 @@ class SimplifiedResearchAgent:
         else:
             LOGGER.info("Skipping web search as per intent")
 
-        # Step 3: Single LLM call with all data
         answer_result = self._generate_answer(prompt, history_text, web_content)
-
-        # Step 4: Store the conversation turn
         self._store_session_turn(user_id, session_id, prompt, answer_result["answer"])
 
         return {
@@ -140,9 +214,22 @@ class SimplifiedResearchAgent:
             "search_query_used": search_query if use_web_search else None,
         }
 
-    def _determine_intent(self, prompt):
+    def _get_last_two_messages(self, user_id, session_id):
+        """Fetch last 2 messages from chat history for intent context."""
+        if not user_id or not session_id:
+            return ""
+        try:
+            history_text = self.chat_session_store.build_history_text(user_id, session_id)
+            if not history_text:
+                return ""
+            lines = [line for line in history_text.strip().splitlines() if line.strip()]
+            return "\n".join(lines[-2:]) if len(lines) >= 2 else "\n".join(lines)
+        except Exception as e:
+            LOGGER.warning("Failed to fetch last 2 messages for intent detection: %s", e)
+            return ""
+
+    def _determine_intent(self, prompt, last_two_messages=""):
         """Determine if we need history and/or web search."""
-        # Quick check for simple conversational prompts
         prompt_lower = prompt.strip().lower()
         simple_prompts = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay", "yes", "no", "sure", "cool", "nice"]
 
@@ -157,32 +244,33 @@ class SimplifiedResearchAgent:
             }
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        full_prompt = "\n\n".join([
+        parts = [
             "Decide whether the assistant should read previous session history and/or use web search.",
             "Return JSON only with keys: read_history, use_web_search, reason.",
             f"Current UTC date: {today}",
-            f"User prompt: {prompt}",
-        ])
+        ]
+        if last_two_messages:
+            parts.append(f"Last 2 conversation messages:\n{last_two_messages}")
+        parts.append(f"Latest user prompt: {prompt}")
+        full_prompt = "\n\n".join(parts)
 
         output_text, usage = self._invoke_bedrock(full_prompt, "intent detection", INTENT_SYSTEM_PROMPT)
-
-        # Extract JSON from response (handle markdown-wrapped JSON)
         json_text = self._extract_json_from_response(output_text)
 
         try:
             parsed = json.loads(json_text)
             result = {
                 "read_history": bool(parsed.get("read_history", False)),
-                "use_web_search": bool(parsed.get("use_web_search", False)),  # Changed default to False
+                "use_web_search": bool(parsed.get("use_web_search", False)),
                 "reason": parsed.get("reason", "Intent detection completed"),
                 "usage": usage,
                 "model_id": BEDROCK_MODEL_ID,
             }
             LOGGER.info("LLM Intent detection: read_history=%s, use_web_search=%s, reason='%s'",
-                       result["read_history"], result["use_web_search"], result["reason"])
+                        result["read_history"], result["use_web_search"], result["reason"])
             return result
         except json.JSONDecodeError as e:
-            LOGGER.warning("Intent detection: Failed to parse LLM response: %s. Raw response: '%s'", str(e), output_text[:500])
+            LOGGER.warning("Intent detection: Failed to parse LLM response: %s. Raw: '%s'", str(e), output_text[:500])
             return {
                 "read_history": False,
                 "use_web_search": False,
@@ -195,7 +283,6 @@ class SimplifiedResearchAgent:
     def _is_content_url(url):
         if not url:
             return False
-
         try:
             parsed = urlparse(url)
             hostname = (parsed.hostname or "").lower()
@@ -203,28 +290,16 @@ class SimplifiedResearchAgent:
         except Exception:
             return False
 
-        blocked_domains = {
-            "youtube.com",
-            "youtu.be",
-            "vimeo.com",
-            "dailymotion.com",
-            "twitter.com",
-            "facebook.com",
-            "instagram.com",
-            "tiktok.com",
-        }
-
+        blocked_domains = {"youtube.com", "youtu.be", "vimeo.com", "dailymotion.com",
+                           "twitter.com", "facebook.com", "instagram.com", "tiktok.com"}
         if any(domain in hostname for domain in blocked_domains):
             return False
-
         if path.startswith("/watch") or "/watch" in path or path.startswith("/video") or "/video/" in path or "/embed" in path:
             return False
-
         return True
 
     def _build_search_query(self, history_text, prompt):
         """Rewrite the user prompt as a standalone search query using last 2 history messages."""
-        # Extract last 2 messages from history
         lines = [line for line in history_text.strip().splitlines() if line.strip()]
         last_two = "\n".join(lines[-2:]) if len(lines) >= 2 else "\n".join(lines)
 
@@ -242,17 +317,15 @@ class SimplifiedResearchAgent:
                 return rewritten
         except Exception as e:
             LOGGER.warning("Search query rewrite failed, using original prompt: %s", e)
-
         return prompt
 
     def _fetch_web_content(self, prompt):
-        """Fetch content from max 2 successful URLs using Tavily (try up to 10 URLs)."""
+        """Fetch content from max 2 successful URLs using Tavily."""
         if not TAVILY_API_KEY:
             LOGGER.warning("TAVILY_API_KEY not configured, skipping web search")
             return ""
 
         try:
-            # Search with Tavily - get top 10 URLs
             response = requests.post(
                 "https://api.tavily.com/search",
                 json={
@@ -269,52 +342,31 @@ class SimplifiedResearchAgent:
             search_results = response.json()
 
             urls = [result["url"] for result in search_results.get("results", [])[:10]]
-            LOGGER.info("Tavily returned %d URLs for query: %s", len(urls), prompt[:50])
-            LOGGER.info("Tavily URLs: %s", urls)
-
             filtered_urls = [url for url in urls if self._is_content_url(url)]
-            LOGGER.info("Filtered URLs: %d out of %d", len(filtered_urls), len(urls))
-            LOGGER.info("Filtered URLs: %s", filtered_urls)
+            LOGGER.info("Tavily: %d URLs, %d filtered for query: %s", len(urls), len(filtered_urls), prompt[:50])
 
             if not filtered_urls:
                 return ""
 
-            # Try scraping all URLs in parallel, stop after 2 successful extractions
             successful_contents = []
-            attempted_count = 0
             successful_count = 0
 
             with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_url = {executor.submit(self._extract_url_content, url): url for url in filtered_urls}
-
                 for future in as_completed(future_to_url):
-                    attempted_count += 1
                     url = future_to_url[future]
-
                     try:
                         content = future.result()
                         if content:
                             successful_contents.append(content)
                             successful_count += 1
-                            LOGGER.info("Successfully extracted content from %s (%d/%d successful)",
-                                       url, successful_count, attempted_count)
-
-                            # Stop after 2 successful extractions
                             if successful_count >= 2:
-                                LOGGER.info("Reached 2 successful extractions, cancelling remaining tasks")
-                                # Cancel remaining futures
-                                for remaining_future in future_to_url:
-                                    if not remaining_future.done():
-                                        remaining_future.cancel()
+                                for remaining in future_to_url:
+                                    if not remaining.done():
+                                        remaining.cancel()
                                 break
-                        else:
-                            LOGGER.info("Failed to extract content from %s", url)
-
                     except Exception as e:
                         LOGGER.warning("Exception extracting from %s: %s", url, e)
-
-            LOGGER.info("Web scraping summary: %d URLs attempted, %d successful extractions",
-                       attempted_count, successful_count)
 
             return "\n\n".join(successful_contents)
 
@@ -333,46 +385,71 @@ class SimplifiedResearchAgent:
             return ""
 
     def _generate_answer(self, prompt, history_text="", web_content=""):
-        """Generate final answer using single LLM call."""
-        prompt_parts = []
-
-        if web_content:
-            prompt_parts.append("Use the provided web content to answer questions about current events, scores, or recent information.")
-        else:
-            prompt_parts.append("Use built-in model knowledge to answer the question.")
-
-        if history_text:
-            prompt_parts.append(f"Previous chat messages:\n{history_text}")
-
-        if web_content:
-            prompt_parts.append(f"Retrieved web content:\n{web_content}")
-
-        prompt_parts.append(f"Latest user prompt: {prompt}")
-
-        full_prompt = "\n\n".join(prompt_parts)
-
+        """Generate final answer using single LLM call (non-streaming)."""
+        full_prompt = self._build_answer_prompt(prompt, history_text, web_content)
         answer_text, usage = self._invoke_bedrock(full_prompt, "answer generation", ANSWER_SYSTEM_PROMPT)
+        return {"answer": answer_text, "usage": usage, "model_id": BEDROCK_MODEL_ID}
 
-        return {
-            "answer": answer_text,
-            "usage": usage,
-            "model_id": BEDROCK_MODEL_ID,
-        }
+    def _stream_answer(self, prompt, history_text="", web_content=""):
+        """Stream answer from Bedrock using converse_stream. Yields (chunk_text, None) then (None, usage)."""
+        full_prompt = self._build_answer_prompt(prompt, history_text, web_content)
+
+        try:
+            response = self.client.converse_stream(
+                modelId=BEDROCK_MODEL_ID,
+                system=[{"text": ANSWER_SYSTEM_PROMPT}],
+                messages=[{"role": "user", "content": [{"text": full_prompt}]}],
+            )
+
+            input_tokens = 0
+            output_tokens = 0
+
+            for event in response.get("stream", []):
+                if "contentBlockDelta" in event:
+                    text = event["contentBlockDelta"].get("delta", {}).get("text", "")
+                    if text:
+                        yield text, None
+                elif "metadata" in event:
+                    token_usage = event["metadata"].get("usage", {})
+                    input_tokens = token_usage.get("inputTokens", 0)
+                    output_tokens = token_usage.get("outputTokens", 0)
+
+            yield None, {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+
+        except (ClientError, BotoCoreError) as error:
+            LOGGER.exception("Bedrock converse_stream failed")
+            raise RuntimeError(f"Bedrock streaming call failed: {error}") from error
+
+    @staticmethod
+    def _build_answer_prompt(prompt, history_text="", web_content=""):
+        """Build the full prompt for answer generation."""
+        parts = []
+        if web_content:
+            parts.append("Use the provided web content to answer questions about current events, scores, or recent information.")
+        else:
+            parts.append("Use built-in model knowledge to answer the question.")
+        if history_text:
+            parts.append(f"Previous chat messages:\n{history_text}")
+        if web_content:
+            parts.append(f"Retrieved web content:\n{web_content}")
+        parts.append(f"Latest user prompt: {prompt}")
+        return "\n\n".join(parts)
 
     def _invoke_bedrock(self, prompt, operation_name, system_prompt):
-        """Invoke Bedrock model and return LiteLLM-based usage counts."""
+        """Invoke Bedrock model and return text + usage counts."""
         try:
             response = self.client.converse(
                 modelId=BEDROCK_MODEL_ID,
                 system=[{"text": system_prompt}],
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
             )
-
             output_text = self._extract_text(response)
             usage = self._build_usage(system_prompt, prompt, output_text)
-
             return output_text, usage
-
         except (ClientError, BotoCoreError) as error:
             LOGGER.exception("Bedrock %s call failed", operation_name)
             raise RuntimeError(f"Bedrock {operation_name} call failed: {error}") from error
@@ -388,80 +465,48 @@ class SimplifiedResearchAgent:
         }
 
     def _count_tokens_for_input(self, system_prompt, user_prompt):
-        """Count input tokens (system + user prompt) using LiteLLM."""
         if token_counter is None:
-            LOGGER.warning("LiteLLM token_counter unavailable; falling back to zero token count")
             return 0
-
         try:
-            # Build messages format for token_counter
             messages = [{"role": "user", "content": user_prompt}]
-            input_tokens = token_counter(
-                model=LITELLM_TOKENIZER_MODEL,
-                messages=messages,
-            )
-            # Add system prompt tokens
+            input_tokens = token_counter(model=LITELLM_TOKENIZER_MODEL, messages=messages)
             if system_prompt:
-                system_tokens = token_counter(
-                    model=LITELLM_TOKENIZER_MODEL,
-                    text=system_prompt,
-                )
-                input_tokens += system_tokens
+                input_tokens += token_counter(model=LITELLM_TOKENIZER_MODEL, text=system_prompt)
             return input_tokens
         except Exception as error:
             LOGGER.warning("LiteLLM input token counting failed: %s", error)
             return 0
 
     def _count_tokens_for_output(self, output_text):
-        """Count output tokens using LiteLLM."""
         if token_counter is None:
-            LOGGER.warning("LiteLLM token_counter unavailable; falling back to zero token count")
             return 0
-
         try:
-            output_tokens = token_counter(
-                model=LITELLM_TOKENIZER_MODEL,
-                text=output_text,
-            )
-            return output_tokens
+            return token_counter(model=LITELLM_TOKENIZER_MODEL, text=output_text)
         except Exception as error:
             LOGGER.warning("LiteLLM output token counting failed: %s", error)
             return 0
 
     @staticmethod
     def _extract_text(response):
-        """Extract text from Bedrock response."""
+        """Extract text from Bedrock converse response."""
         output = response.get("output", {})
         message = output.get("message", {})
         content = message.get("content", [])
-
-        parts = []
-        for item in content:
-            text = item.get("text")
-            if text:
-                parts.append(text)
-        return "".join(parts).strip()
+        return "".join(item.get("text", "") for item in content).strip()
 
     @staticmethod
     def _extract_json_from_response(text):
         """Extract JSON from LLM response, handling markdown code blocks."""
         if not text:
             return text
-
-        # Remove markdown code block wrappers
         text = text.strip()
-
-        # Handle ```json ... ``` format
         if text.startswith('```json') and text.endswith('```'):
-            text = text[7:-3].strip()  # Remove ```json and ```
+            text = text[7:-3].strip()
         elif text.startswith('```') and text.endswith('```'):
-            text = text[3:-3].strip()  # Remove generic ``` wrappers
-
-        # Try to find JSON object if there are multiple parts
+            text = text[3:-3].strip()
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
         if json_match:
             return json_match.group(0)
-
         return text
 
     @staticmethod
@@ -479,7 +524,6 @@ class SimplifiedResearchAgent:
         """Store conversation turn in DynamoDB."""
         if not user_id or not session_id:
             return
-
         try:
             messages = [
                 {"role": "user", "content": prompt, "timestamp": datetime.now(timezone.utc).isoformat()},
