@@ -127,4 +127,5 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "headers": SSE_HEADERS,
         "body": "".join(generate()),
+        #"body": generate(),
     }

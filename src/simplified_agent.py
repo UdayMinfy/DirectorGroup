@@ -141,9 +141,10 @@ class SimplifiedResearchAgent:
         self._store_session_turn(user_id, session_id, prompt, full_answer)
 
         # Step 5: Track usage
+        budget_view = None
         try:
             from budget_service import TokenBudgetService
-            TokenBudgetService().track_usage(
+            budget_view = TokenBudgetService().track_usage(
                 user_email=user_id,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
@@ -152,12 +153,19 @@ class SimplifiedResearchAgent:
             LOGGER.warning("Failed to track usage: %s", e)
 
         # Step 6: Send final done event
-        yield _sse("done", {
+        done_event = {
             "session_id": session_id,
             "usage": usage,
             "history_used": bool(history_text),
             "search_query_used": search_query if use_web_search else None,
-        })
+        }
+        
+        # Add updated budget information if available
+        if budget_view:
+            done_event["consumed_tokens_daily"] = budget_view.get("consumed_tokens_daily", 0)
+            done_event["consumed_tokens_monthly"] = budget_view.get("consumed_tokens_monthly", 0)
+        
+        yield _sse("done", done_event)
 
     def run(self, prompt, user_id="", session_id=""):
         LOGGER.info("Agent received prompt: %s", prompt)
