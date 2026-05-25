@@ -41,3 +41,9 @@ REQUEST_TOKEN_PRECHECK = int(_getenv("REQUEST_TOKEN_PRECHECK", "0"))
 MODEL_INPUT_COST_PER_1K = float(_getenv("MODEL_INPUT_COST_PER_1K", "0"))
 MODEL_OUTPUT_COST_PER_1K = float(_getenv("MODEL_OUTPUT_COST_PER_1K", "0"))
 MAX_PROMPT_LENGTH = int(_getenv("MAX_PROMPT_LENGTH", "4000"))
+
+# Request logging configuration
+REQUEST_LOGS_TABLE = _getenv("REQUEST_LOGS_TABLE", "RequestLogs")
+INPUT_TOKEN_COST_PER_1K = float(_getenv("INPUT_TOKEN_COST_PER_1K", "0.003"))  # Claude Sonnet input cost
+OUTPUT_TOKEN_COST_PER_1K = float(_getenv("OUTPUT_TOKEN_COST_PER_1K", "0.015"))  # Claude Sonnet output cost
+MODEL_NAME = _getenv("MODEL_NAME", "claude-sonnet-4-5")

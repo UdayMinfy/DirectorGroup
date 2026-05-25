@@ -36,6 +36,10 @@ Resources:
           REQUEST_TOKEN_PRECHECK: 0
           MODEL_INPUT_COST_PER_1K: 0
           MODEL_OUTPUT_COST_PER_1K: 0
+          REQUEST_LOGS_TABLE: RequestLogs
+          INPUT_TOKEN_COST_PER_1K: 0.003
+          OUTPUT_TOKEN_COST_PER_1K: 0.015
+          MODEL_NAME: claude-sonnet-4-5
       FunctionUrlConfig:
         AuthType: AWS_IAM
         InvokeMode: RESPONSE_STREAM
@@ -76,6 +80,11 @@ Resources:
                 - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/ChatSessions
             - Effect: Allow
               Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/RequestLogs
+            - Effect: Allow
+              Action:
                 - cognito-idp:GetUser
               Resource: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/ap-southeast-2_gsJ5J02mu
     Metadata:
@@ -89,6 +98,46 @@ Resources:
       Action: lambda:InvokeFunctionUrl
       Principal: arn:aws:iam::435415984578:role/service-role/directtech_identity_poolrole
       FunctionUrlAuthType: AWS_IAM
+
+  RequestLogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: RequestLogs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: email-timestamp-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: session-timestamp-index
+          KeySchema:
+            - AttributeName: session_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Purpose
+          Value: RequestLogging
 
 Outputs:
   ChatFunctionV2Url:
