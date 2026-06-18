@@ -238,6 +238,8 @@ class SimplifiedResearchAgent:
 
     def _determine_intent(self, prompt, last_two_messages=""):
         """Determine if we need history and/or web search."""
+        LOGGER.info("Intent detection using model: %s", BEDROCK_MODEL_ID)
+        
         prompt_lower = prompt.strip().lower()
         simple_prompts = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay", "yes", "no", "sure", "cool", "nice"]
 
@@ -394,12 +396,14 @@ class SimplifiedResearchAgent:
 
     def _generate_answer(self, prompt, history_text="", web_content=""):
         """Generate final answer using single LLM call (non-streaming)."""
+        LOGGER.info("Answer generation using model: %s", BEDROCK_MODEL_ID)
         full_prompt = self._build_answer_prompt(prompt, history_text, web_content)
         answer_text, usage = self._invoke_bedrock(full_prompt, "answer generation", ANSWER_SYSTEM_PROMPT)
         return {"answer": answer_text, "usage": usage, "model_id": BEDROCK_MODEL_ID}
 
     def _stream_answer(self, prompt, history_text="", web_content=""):
         """Stream answer from Bedrock using converse_stream. Yields (chunk_text, None) then (None, usage)."""
+        LOGGER.info("Answer generation using model: %s", BEDROCK_MODEL_ID)
         full_prompt = self._build_answer_prompt(prompt, history_text, web_content)
 
         try:
