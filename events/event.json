@@ -7,6 +7,6 @@
   "headers": {
     "content-type": "application/json"
   },
-  "body": "{\"prompt\": \"What is the capital of France?\", \"email\": \"test@example.com\", \"session_id\": \"test-123\"}",
+  "body": "{\"prompt\": \"tell me about australia in short.\", \"email\": \"Dillip.Mohanty@directed.com.au\", \"session_id\": \"4b3967f1-6efa-4703-a2f9-0c6947a65ca2\"}",
   "isBase64Encoded": false
 }

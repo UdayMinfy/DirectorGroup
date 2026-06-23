@@ -26,54 +26,53 @@ except ImportError:
 
 LOGGER = logging.getLogger(__name__)
 
-INTENT_SYSTEM_PROMPT = """You are an intent router for the latest user message.
+
+
+INTENT_SYSTEM_PROMPT = """CRITICAL INSTRUCTION:
+You will receive conversation history and a current user message. Your task is to determine if the current message references or depends on the conversation history.
+
+Check:
+- Pronouns (it, that, this, them, him, her, they) referring to earlier entities.
+- Follow-ups (tell me more, continue, what about, how about, elaborate, and that).
+- Whether the message would make NO SENSE without the conversation history.
+
 Return JSON only:
-{"read_history": true, "use_web_search": true, "reason": "short reason"}
-Rules:
-- Set read_history = true only if the latest message depends on earlier chat context, such as follow-ups, omitted subjects, references like "it", "that", "this", "him", "them", corrections, or "tell me more".
-- Set read_history = false if the latest message is self-contained.
-- Set use_web_search = true if answering correctly needs current, recent, changing, date-sensitive, live, or externally verifiable information.
-Examples: latest news, recent events, match results, schedules, prices, weather, current positions, or anything likely to have changed.
-- Set use_web_search = false if the query can be answered from stable built-in knowledge.
-Examples: historical facts, general explanations, concepts, writing help, and timeless information.
-Decision modes:
-- both false: self-contained + stable knowledge question, greetings, simple conversation
-- read_history true, use_web_search false: follow-up about prior chat, but no fresh facts needed
-- read_history false, use_web_search true: self-contained question needing fresh/current facts
-- both true: follow-up that also needs fresh/current facts
-Bias:
-- If the message contains words like "latest", "current", "today", "recent", "now", prefer use_web_search = true.
-- For simple greetings, questions, or conversational messages, prefer use_web_search = false.
-- Only set use_web_search = true when external verification or current information is clearly needed.
-Do not answer the user. Output JSON only."""
+{"read_history": bool, "use_web_search": bool, "reason": "short"}
 
-SEARCH_QUERY_SYSTEM_PROMPT = """You are a search query rewriter.
-Given the last 2 messages from a conversation and the user's latest follow-up, rewrite it as a clear, standalone web search query.
 Rules:
-- Resolve all pronouns and references (it, that, this, they, him, her) using the conversation context.
-- Output only the search query. No explanation, no punctuation at the end, no quotes.
-- Keep it concise — 5 to 12 words maximum.
-- Make it specific enough to return useful web results."""
+- read_history=true if the message depends on earlier topics, entities, questions, pronouns, or follow-up context.
+- read_history=false if the message is fully self-contained.
+- use_web_search=true only for current, changing, recent, or externally verifiable information (latest, today, now, recent, news, weather, prices, schedules, results, current events).
+- use_web_search=false for stable knowledge, historical facts, concepts, explanations, or timeless information.
 
-ANSWER_SYSTEM_PROMPT = """You are a helpful, knowledgeable conversational assistant. Your goal is to give thorough, well-explained answers that genuinely help the user understand the topic.
-Answer style:
-- Start with a clear direct answer, then expand with context, explanation, and relevant details.
-- Provide enough depth that the user walks away with a solid understanding — not just a one-liner.
-- For factual or technical topics, explain the why and how, not just the what.
-- Use examples, analogies, or comparisons where they help clarify.
-- For complex topics, break the answer into logical sections or steps.
-- Write naturally and conversationally — detailed but not dry or academic.
-Use of knowledge:
-- Use built-in knowledge for stable topics.
-- If web content is provided, prioritize and synthesize it for current or recent topics.
-- Cite or reference sources when using retrieved web content.
-Formatting:
-- Use bullet points, numbered lists, or headers when the answer has multiple parts or steps.
-- Bold key terms or important points to make them easy to scan.
-- Use light visual markers like ✓, •, or 👉 where they improve readability.
-- Aim for responses that are complete — avoid cutting off important context just to be brief.
-Follow-up:
-- End with a relevant follow-up question or suggestion if it would genuinely help the user go deeper."""
+Modes:
+false,false = self-contained + stable knowledge
+true,false = history only
+false,true = web only
+true,true = history + web
+
+Output JSON only."""
+
+
+
+SEARCH_QUERY_SYSTEM_PROMPT = """Rewrite the user's follow-up into a standalone web search query using the previous two messages.
+
+Rules:
+- Resolve references and pronouns from context.
+- Return only the query.
+- No quotes or explanations.
+- Keep it concise (5-12 words).
+- Make it specific enough for web search."""
+
+
+ANSWER_SYSTEM_PROMPT = """You are a helpful assistant.
+- Answer directly and concisely.
+- Explain only when necessary.
+- Use bullets for complex answers.
+- Prefer retrieved content when provided.
+- Use **bold** for key points and suggest relevant follow-ups when useful."""
+
+
 
 
 def _sse(event_type, data):
@@ -92,6 +91,8 @@ class SimplifiedResearchAgent:
 
         # Step 1: Fetch last 2 messages for intent context
         last_two_messages = self._get_last_two_messages(user_id, session_id)
+        if last_two_messages:
+            LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
 
         # Step 2: Determine intent using last 2 messages + current prompt
         intent_result = self._determine_intent(prompt, last_two_messages)
@@ -106,6 +107,8 @@ class SimplifiedResearchAgent:
 
         if use_history:
             history_text = self.chat_session_store.build_history_text(user_id, session_id)
+            if history_text:
+                LOGGER.info("Chat history retrieved (first 100 chars): %s", history_text[:100])
 
         if use_web_search:
             yield _sse("status", {"message": "Searching the web..."})
@@ -172,6 +175,8 @@ class SimplifiedResearchAgent:
 
         # Fetch last 2 messages for intent context
         last_two_messages = self._get_last_two_messages(user_id, session_id)
+        if last_two_messages:
+            LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
 
         intent_result = self._determine_intent(prompt, last_two_messages)
         use_history = intent_result["read_history"]
@@ -188,6 +193,7 @@ class SimplifiedResearchAgent:
             history_text = self.chat_session_store.build_history_text(user_id, session_id)
             if history_text:
                 LOGGER.info("Loaded history for session %s (%d chars)", session_id, len(history_text))
+                LOGGER.info("Chat history retrieved (first 100 chars): %s", history_text[:100])
             else:
                 LOGGER.info("No history found for session %s", session_id)
 
@@ -241,7 +247,7 @@ class SimplifiedResearchAgent:
         LOGGER.info("Intent detection using model: %s", BEDROCK_MODEL_ID)
         
         prompt_lower = prompt.strip().lower()
-        simple_prompts = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay", "yes", "no", "sure", "cool", "nice"]
+        simple_prompts = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "cool", "nice"]
 
         if prompt_lower in simple_prompts or len(prompt.strip()) < 10:
             LOGGER.info("Intent detection: Simple conversational prompt detected, skipping LLM call")
@@ -254,15 +260,31 @@ class SimplifiedResearchAgent:
             }
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        parts = [
-            "Decide whether the assistant should read previous session history and/or use web search.",
-            "Return JSON only with keys: read_history, use_web_search, reason.",
-            f"Current UTC date: {today}",
-        ]
+        
+        # Build structured prompt with clear sections
+        parts = [f"Current UTC date: {today}\n"]
+        
         if last_two_messages:
-            parts.append(f"Last 2 conversation messages:\n{last_two_messages}")
-        parts.append(f"Latest user prompt: {prompt}")
-        full_prompt = "\n\n".join(parts)
+            parts.append("=== CONVERSATION HISTORY ===")
+            parts.append(last_two_messages)
+            parts.append("\n=== CURRENT USER MESSAGE ===")
+            parts.append(f'"{prompt}"')
+            #parts.append("\n=== ANALYSIS TASK ===")
+            #parts.append("Does the current user message reference, continue, or depend on the conversation history above?")
+            #parts.append("Check for pronouns (it, that, this) or follow-up phrases (tell me more, continue, what about).")
+            #parts.append("Determine: read_history (true/false) and use_web_search (true/false)")
+        else:
+            parts.append("=== USER MESSAGE ===")
+            parts.append(f'"{prompt}"')
+            #parts.append("\n=== ANALYSIS TASK ===")
+            #parts.append("This is a standalone message with no conversation history.")
+            #parts.append("Determine: read_history (should be false) and use_web_search (true if needs current info)")
+        
+        full_prompt = "\n".join(parts)
+        
+        LOGGER.info("[DEBUG] Intent detection - System prompt length: %d chars", len(INTENT_SYSTEM_PROMPT))
+        LOGGER.info("[DEBUG] Intent detection - User prompt length: %d chars", len(full_prompt))
+        LOGGER.info("[DEBUG] Intent detection - User prompt content: %s", full_prompt[:200])
 
         output_text, usage = self._invoke_bedrock(full_prompt, "intent detection", INTENT_SYSTEM_PROMPT)
         json_text = self._extract_json_from_response(output_text)
@@ -405,6 +427,12 @@ class SimplifiedResearchAgent:
         """Stream answer from Bedrock using converse_stream. Yields (chunk_text, None) then (None, usage)."""
         LOGGER.info("Answer generation using model: %s", BEDROCK_MODEL_ID)
         full_prompt = self._build_answer_prompt(prompt, history_text, web_content)
+        
+        LOGGER.info("[DEBUG] Answer generation - System prompt length: %d chars", len(ANSWER_SYSTEM_PROMPT))
+        LOGGER.info("[DEBUG] Answer generation - User prompt length: %d chars", len(full_prompt))
+        LOGGER.info("[DEBUG] Answer generation - User prompt content: %s", full_prompt[:200])
+        LOGGER.info("[DEBUG] Answer generation - Has history: %s (%d chars)", bool(history_text), len(history_text))
+        LOGGER.info("[DEBUG] Answer generation - Has web content: %s (%d chars)", bool(web_content), len(web_content))
 
         try:
             response = self.client.converse_stream(
@@ -461,6 +489,14 @@ class SimplifiedResearchAgent:
             )
             output_text = self._extract_text(response)
             usage = self._build_usage(system_prompt, prompt, output_text)
+            
+            LOGGER.info("[DEBUG] %s - Actual usage from response: input=%d, output=%d", 
+                       operation_name, 
+                       response.get('usage', {}).get('inputTokens', 0),
+                       response.get('usage', {}).get('outputTokens', 0))
+            LOGGER.info("[DEBUG] %s - LiteLLM calculated usage: input=%d, output=%d", 
+                       operation_name, usage.get('input_tokens', 0), usage.get('output_tokens', 0))
+            
             return output_text, usage
         except (ClientError, BotoCoreError) as error:
             LOGGER.exception("Bedrock %s call failed", operation_name)

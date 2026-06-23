@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from config import CHAT_SESSIONS_TABLE, DYNAMODB_REGION, MAX_HISTORY_CHARS
+from config import CHAT_SESSIONS_TABLE, DYNAMODB_REGION
 
 
 LOGGER = logging.getLogger(__name__)
@@ -35,13 +35,16 @@ class ChatSessionStore:
         item = response.get("Item") or {}
         return self._normalize_messages(item.get("messages"))
 
-    def build_history_text(self, user_id, session_id):
+    def build_history_text(self, user_id, session_id, max_messages=10):
         messages = self.read_messages(user_id, session_id)
         if not messages:
             return ""
 
+        # Get only the most recent max_messages
+        recent_messages = messages[-max_messages:] if len(messages) > max_messages else messages
+
         lines = []
-        for message in messages:
+        for message in recent_messages:
             role = (message.get("role") or message.get("sender") or "user").strip() or "user"
             content = (
                 message.get("content")
@@ -54,11 +57,8 @@ class ChatSessionStore:
             if not content:
                 continue
             lines.append(f"{role}: {content}")
-            if len("\n".join(lines)) >= MAX_HISTORY_CHARS:
-                break
 
-        history_text = "\n".join(lines)
-        return history_text[:MAX_HISTORY_CHARS]
+        return "\n".join(lines)
 
     def append_messages(self, user_id, session_id, new_messages):
         normalized_messages = self._normalize_messages(new_messages)
