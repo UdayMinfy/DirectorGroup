@@ -65,14 +65,16 @@ Rules:
 - Make it specific enough for web search."""
 
 
-ANSWER_SYSTEM_PROMPT = """You are a helpful assistant.
-- Answer directly and concisely.
-- Explain only when necessary.
-- Use bullets for complex answers.
-- Prefer retrieved content when provided.
-- Use **bold** for key points and suggest relevant follow-ups when useful."""
+#ANSWER_SYSTEM_PROMPT = """You are a helpful assistant.
+#- Answer directly and concisely.
+#- Explain only when necessary.
+#- Use bullets for complex answers.
+#- Prefer retrieved content when provided.
+#- Use **bold** for key points and suggest relevant follow-ups when useful."""
 
-
+ANSWER_SYSTEM_PROMPT = """
+Answer briefly. Use 1-3 sentences or bullets. Expand only if asked. Prefer retrieved content.
+"""
 
 
 def _sse(event_type, data):
@@ -249,7 +251,8 @@ class SimplifiedResearchAgent:
         prompt_lower = prompt.strip().lower()
         simple_prompts = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "cool", "nice"]
 
-        if prompt_lower in simple_prompts or len(prompt.strip()) < 10:
+        #if prompt_lower in simple_prompts or len(prompt.strip()) < 10:
+        if prompt_lower in simple_prompts:
             LOGGER.info("Intent detection: Simple conversational prompt detected, skipping LLM call")
             return {
                 "read_history": False,

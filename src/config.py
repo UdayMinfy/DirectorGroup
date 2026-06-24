@@ -19,6 +19,12 @@ def _getboolenv(name, default):
 BEDROCK_MODEL_ID = _getenv("BEDROCK_MODEL_ID", "au.anthropic.claude-sonnet-4-5-20250929-v1:0")
 LITELLM_TOKENIZER_MODEL = _getenv("LITELLM_TOKENIZER_MODEL", "claude-3-5-sonnet-20240620")
 BEDROCK_REGION = _getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "ap-southeast-2"))
+
+# Chat summarization configuration
+NOVA_PRO_MODEL_ID = _getenv("NOVA_PRO_MODEL_ID", "apac.amazon.nova-pro-v1:0")
+SUMMARY_CHUNK_SIZE = int(_getenv("SUMMARY_CHUNK_SIZE", "8"))
+SUMMARY_WORD_LIMIT = int(_getenv("SUMMARY_WORD_LIMIT", "100"))
+
 COGNITO_REGION = _getenv("COGNITO_REGION", BEDROCK_REGION)
 COGNITO_USER_POOL_ID = _getenv("COGNITO_USER_POOL_ID", "")
 COGNITO_APP_CLIENT_ID = _getenv("COGNITO_APP_CLIENT_ID", "")
