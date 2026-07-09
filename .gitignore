@@ -4,3 +4,4 @@ frontend.md
 src/__pycache__/
 test_stream.py
 venv/
+events/

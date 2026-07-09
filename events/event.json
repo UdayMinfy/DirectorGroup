@@ -7,6 +7,6 @@
   "headers": {
     "content-type": "application/json"
   },
-  "body": "{\"prompt\": \"where you are very good at\", \"email\": \"Dillip.Mohanty@directed.com.au\", \"session_id\": \"722b79a5-09df-48a0-a9ec-1384d5a6b87a\"}",
+  "body": "{\"prompt\": \"which model you are using?\", \"email\": \"Dillip.Mohanty@directed.com.au\", \"session_id\": \"7a0e13c2-b90e-431b-a64a-66f6085a7b7e\"}",
   "isBase64Encoded": false
 }

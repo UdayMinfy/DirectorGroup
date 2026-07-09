@@ -25,13 +25,28 @@ NOVA_PRO_MODEL_ID = _getenv("NOVA_PRO_MODEL_ID", "apac.amazon.nova-pro-v1:0")
 SUMMARY_CHUNK_SIZE = int(_getenv("SUMMARY_CHUNK_SIZE", "8"))
 SUMMARY_WORD_LIMIT = int(_getenv("SUMMARY_WORD_LIMIT", "100"))
 
+# File upload configuration
+MAX_FILE_SIZE_MB = int(_getenv("MAX_FILE_SIZE_MB", "5"))
+MAX_FILE_PAGES = int(_getenv("MAX_FILE_PAGES", "15"))
+ALLOWED_FILE_TYPES = ["pdf", "docx"]
+
+FILE_SUMMARY_SYSTEM_PROMPT = """You are a document summarizer. Create clear, comprehensive summaries of documents.
+
+Guidelines:
+- Start with a brief overview of the document's main purpose
+- Extract and organize key points, findings, and conclusions
+- Preserve important details like numbers, dates, names
+- Use bullet points or sections for clarity
+- Be concise but thorough
+- Maintain the document's original meaning and context"""
+
 COGNITO_REGION = _getenv("COGNITO_REGION", BEDROCK_REGION)
 COGNITO_USER_POOL_ID = _getenv("COGNITO_USER_POOL_ID", "")
 COGNITO_APP_CLIENT_ID = _getenv("COGNITO_APP_CLIENT_ID", "")
 JWT_ISSUER = _getenv("JWT_ISSUER", "")
 JWT_JWKS_URL = _getenv("JWT_JWKS_URL", "")
-MAX_PAGE_CHARS = int(_getenv("MAX_PAGE_CHARS", "6000"))
-MAX_SOURCE_CHARS = int(_getenv("MAX_SOURCE_CHARS", "3000"))
+MAX_PAGE_CHARS = int(_getenv("MAX_PAGE_CHARS", "5000"))
+MAX_SOURCE_CHARS = int(_getenv("MAX_SOURCE_CHARS", "3500"))
 BROWSER_IDENTIFIER = _getenv("BROWSER_IDENTIFIER", _getenv("BROWSER_ID", ""))
 BROWSER_REGION = _getenv("BROWSER_REGION", BEDROCK_REGION)
 REQUEST_TIMEOUT_SECONDS = int(_getenv("REQUEST_TIMEOUT_SECONDS", "8"))
@@ -49,6 +64,17 @@ MAX_PROMPT_LENGTH = int(_getenv("MAX_PROMPT_LENGTH", "4000"))
 
 # Request logging configuration
 REQUEST_LOGS_TABLE = _getenv("REQUEST_LOGS_TABLE", "RequestLogs")
-INPUT_TOKEN_COST_PER_1K = float(_getenv("INPUT_TOKEN_COST_PER_1K", "0.003"))  # Claude Sonnet input cost
-OUTPUT_TOKEN_COST_PER_1K = float(_getenv("OUTPUT_TOKEN_COST_PER_1K", "0.015"))  # Claude Sonnet output cost
+
+# Claude Sonnet 4.5 pricing (for chat & intent detection)
+CLAUDE_INPUT_TOKEN_COST_PER_1K = float(_getenv("CLAUDE_INPUT_TOKEN_COST_PER_1K", "0.003"))
+CLAUDE_OUTPUT_TOKEN_COST_PER_1K = float(_getenv("CLAUDE_OUTPUT_TOKEN_COST_PER_1K", "0.015"))
+
+# Nova Pro pricing (for file uploads & chat summarization)
+NOVA_INPUT_TOKEN_COST_PER_1K = float(_getenv("NOVA_INPUT_TOKEN_COST_PER_1K", "0.00080"))
+NOVA_OUTPUT_TOKEN_COST_PER_1K = float(_getenv("NOVA_OUTPUT_TOKEN_COST_PER_1K", "0.0024"))
+
+# Backward compatibility (default to Claude for budget service)
+INPUT_TOKEN_COST_PER_1K = float(_getenv("INPUT_TOKEN_COST_PER_1K", str(CLAUDE_INPUT_TOKEN_COST_PER_1K)))
+OUTPUT_TOKEN_COST_PER_1K = float(_getenv("OUTPUT_TOKEN_COST_PER_1K", str(CLAUDE_OUTPUT_TOKEN_COST_PER_1K)))
+
 MODEL_NAME = _getenv("MODEL_NAME", "claude-sonnet-4-5")

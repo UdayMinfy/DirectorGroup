@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -29,29 +28,21 @@ LOGGER = logging.getLogger(__name__)
 
 
 INTENT_SYSTEM_PROMPT = """CRITICAL INSTRUCTION:
-You will receive conversation history and a current user message. Your task is to determine if the current message references or depends on the conversation history.
-
-Check:
-- Pronouns (it, that, this, them, him, her, they) referring to earlier entities.
-- Follow-ups (tell me more, continue, what about, how about, elaborate, and that).
-- Whether the message would make NO SENSE without the conversation history.
+Your task is to determine if the current message references or depends on the conversation history and requires the internet search.
 
 Return JSON only:
 {"read_history": bool, "use_web_search": bool, "reason": "short"}
 
 Rules:
-- read_history=true if the message depends on earlier topics, entities, questions, pronouns, or follow-up context.
-- read_history=false if the message is fully self-contained.
-- use_web_search=true only for current, changing, recent, or externally verifiable information (latest, today, now, recent, news, weather, prices, schedules, results, current events).
-- use_web_search=false for stable knowledge, historical facts, concepts, explanations, or timeless information.
+- read_history=true if the message depends on prior context, references earlier topics/entities, uses pronouns (it, that, this, they, etc.), or is a follow-up.
+- read_history=false if the message is self-contained.
 
-Modes:
-false,false = self-contained + stable knowledge
-true,false = history only
-false,true = web only
-true,true = history + web
+- use_web_search=true only for current, recent, changing, or externally verifiable information (news, weather, prices, schedules, results, latest/today/now).
+- use_web_search=false for stable facts, concepts, explanations, historical information, or reasoning.
 
-Output JSON only."""
+Consider both the conversation history and current message when deciding.
+
+Output JSON only.."""
 
 
 
@@ -73,7 +64,7 @@ Rules:
 #- Use **bold** for key points and suggest relevant follow-ups when useful."""
 
 ANSWER_SYSTEM_PROMPT = """
-Answer briefly. Use 1-3 sentences or bullets. Expand only if asked. Prefer retrieved content.
+Answer briefly and short. Use 1-3 sentences or bullets. Expand only if the user asked to elaborate. Prefer retrieved content.
 """
 
 
@@ -92,12 +83,12 @@ class SimplifiedResearchAgent:
         """Run the agent and yield SSE-formatted events for streaming."""
 
         # Step 1: Fetch last 2 messages for intent context
-        last_two_messages = self._get_last_two_messages(user_id, session_id)
-        if last_two_messages:
-            LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
+        # last_two_messages = self._get_last_two_messages(user_id, session_id)
+        # if last_two_messages:
+        #     LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
 
         # Step 2: Determine intent using last 2 messages + current prompt
-        intent_result = self._determine_intent(prompt, last_two_messages)
+        intent_result = self._determine_intent(prompt, "")
         use_history = intent_result["read_history"]
         use_web_search = intent_result["use_web_search"]
         LOGGER.info("Intent: use_history=%s, use_web_search=%s", use_history, use_web_search)
@@ -119,6 +110,7 @@ class SimplifiedResearchAgent:
             web_content = self._fetch_web_content(search_query)
             if web_content:
                 yield _sse("status", {"message": "Analysing results..."})
+                LOGGER.info("[DEBUG] Web content available: %d chars for answer generation", len(web_content))
 
         # Step 3: Stream answer from Bedrock
         full_answer = ""
@@ -145,7 +137,19 @@ class SimplifiedResearchAgent:
         # Step 4: Store conversation turn
         self._store_session_turn(user_id, session_id, prompt, full_answer)
 
-        # Step 5: Track usage
+        # Step 5: Calculate current request cost
+        current_request_cost = 0.0
+        try:
+            from request_logger import RequestLogger
+            current_request_cost = RequestLogger._calculate_cost(
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                model_type="claude"
+            )
+        except Exception as e:
+            LOGGER.warning("Failed to calculate request cost: %s", e)
+
+        # Step 6: Track usage in budget (accumulates total)
         budget_view = None
         try:
             from budget_service import TokenBudgetService
@@ -157,18 +161,20 @@ class SimplifiedResearchAgent:
         except Exception as e:
             LOGGER.warning("Failed to track usage: %s", e)
 
-        # Step 6: Send final done event
+        # Step 7: Send final done event (with current request cost only)
         done_event = {
             "session_id": session_id,
             "usage": usage,
             "history_used": bool(history_text),
             "search_query_used": search_query if use_web_search else None,
+            "total_cost_usd": current_request_cost,  # Current request cost ONLY
         }
         
         # Add updated budget information if available
         if budget_view:
             done_event["consumed_tokens_daily"] = budget_view.get("consumed_tokens_daily", 0)
             done_event["consumed_tokens_monthly"] = budget_view.get("consumed_tokens_monthly", 0)
+            done_event["total_accumulated_cost_usd"] = budget_view.get("total_cost_usd", 0)  # Kept internally
         
         yield _sse("done", done_event)
 
@@ -176,11 +182,11 @@ class SimplifiedResearchAgent:
         LOGGER.info("Agent received prompt: %s", prompt)
 
         # Fetch last 2 messages for intent context
-        last_two_messages = self._get_last_two_messages(user_id, session_id)
-        if last_two_messages:
-            LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
+        # last_two_messages = self._get_last_two_messages(user_id, session_id)
+        # if last_two_messages:
+        #     LOGGER.info("Last 2 messages for intent (first 40 chars): %s", last_two_messages[:40])
 
-        intent_result = self._determine_intent(prompt, last_two_messages)
+        intent_result = self._determine_intent(prompt, "")
         use_history = intent_result["read_history"]
         use_web_search = intent_result["use_web_search"]
 
@@ -355,7 +361,7 @@ class SimplifiedResearchAgent:
         return prompt
 
     def _fetch_web_content(self, prompt):
-        """Fetch content from max 2 successful URLs using Tavily."""
+        """Fetch content from max 2 URLs sequentially using Tavily."""
         if not TAVILY_API_KEY:
             LOGGER.warning("TAVILY_API_KEY not configured, skipping web search")
             return ""
@@ -369,7 +375,7 @@ class SimplifiedResearchAgent:
                     "search_depth": "basic",
                     "include_answer": False,
                     "include_raw_content": False,
-                    "max_results": 10,
+                    "max_results": 5,
                 },
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
@@ -386,24 +392,27 @@ class SimplifiedResearchAgent:
             successful_contents = []
             successful_count = 0
 
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_url = {executor.submit(self._extract_url_content, url): url for url in filtered_urls}
-                for future in as_completed(future_to_url):
-                    url = future_to_url[future]
-                    try:
-                        content = future.result()
-                        if content:
-                            successful_contents.append(content)
-                            successful_count += 1
-                            if successful_count >= 2:
-                                for remaining in future_to_url:
-                                    if not remaining.done():
-                                        remaining.cancel()
-                                break
-                    except Exception as e:
-                        LOGGER.warning("Exception extracting from %s: %s", url, e)
+            # Sequential URL extraction - stop after 2 successful scrapes
+            for url in filtered_urls:
+                try:
+                    content = self._extract_url_content(url)
+                    if content:
+                        successful_contents.append(content)
+                        successful_count += 1
+                        LOGGER.info("[DEBUG] Successfully extracted from URL %d: %s (%d chars)", 
+                                   successful_count, url, len(content))
+                        if successful_count >= 2:
+                            break
+                except Exception as e:
+                    LOGGER.warning("Exception extracting from %s: %s", url, e)
 
-            return "\n\n".join(successful_contents)
+            combined_content = "\n\n".join(successful_contents)
+            LOGGER.info(
+                "[DEBUG] Web content extracted: %d chars from %d sources",
+                len(combined_content),
+                len(successful_contents)
+            )
+            return combined_content
 
         except Exception as e:
             LOGGER.warning("Web search failed: %s", e)

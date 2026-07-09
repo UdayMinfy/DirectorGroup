@@ -36,6 +36,7 @@ class RequestLogger:
         response_time_ms,
         model_used,
         error_message=None,
+        model_type="claude",
     ):
         """
         Log a request to DynamoDB.
@@ -50,12 +51,13 @@ class RequestLogger:
             input_tokens: Tokens consumed from input
             output_tokens: Tokens generated in output
             response_time_ms: Total response time in milliseconds
-            model_used: Model name (e.g., "claude-sonnet-4-5")
+            model_used: Model name (e.g., "claude-sonnet-4-5", "nova-pro")
             error_message: Error message if status is "Error" (optional)
+            model_type: "claude" or "nova" to determine pricing (default: "claude")
         """
         try:
-            # Calculate total cost
-            total_cost = self._calculate_cost(input_tokens, output_tokens)
+            # Calculate total cost based on model type
+            total_cost = self._calculate_cost(input_tokens, output_tokens, model_type)
 
             # Prepare item for DynamoDB
             item = {
@@ -82,12 +84,13 @@ class RequestLogger:
 
             LOGGER.info(
                 "Request logged: request_id=%s, email=%s, status=%s, "
-                "input_tokens=%d, output_tokens=%d, cost=%.6f",
+                "input_tokens=%d, output_tokens=%d, model=%s, cost=%.6f",
                 request_id,
                 email,
                 status,
                 input_tokens,
                 output_tokens,
+                model_used,
                 total_cost,
             )
 
@@ -105,17 +108,26 @@ class RequestLogger:
             )
 
     @staticmethod
-    def _calculate_cost(input_tokens, output_tokens):
+    def _calculate_cost(input_tokens, output_tokens, model_type="claude"):
         """
-        Calculate total cost based on token counts.
+        Calculate total cost based on token counts and model type.
 
         Args:
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
+            model_type: "claude" for Claude Sonnet, "nova" for Nova Pro
 
         Returns:
             Total cost in dollars
         """
-        input_cost = (input_tokens / 1000) * INPUT_TOKEN_COST_PER_1K
-        output_cost = (output_tokens / 1000) * OUTPUT_TOKEN_COST_PER_1K
+        # For Nova Pro, use different pricing (4-6x cheaper)
+        if model_type.lower() == "nova":
+            # Nova Pro pricing from config
+            from config import NOVA_INPUT_TOKEN_COST_PER_1K, NOVA_OUTPUT_TOKEN_COST_PER_1K
+            input_cost = (input_tokens / 1000) * NOVA_INPUT_TOKEN_COST_PER_1K
+            output_cost = (output_tokens / 1000) * NOVA_OUTPUT_TOKEN_COST_PER_1K
+        else:
+            # Claude Sonnet pricing (from config INPUT_TOKEN_COST_PER_1K, OUTPUT_TOKEN_COST_PER_1K)
+            input_cost = (input_tokens / 1000) * INPUT_TOKEN_COST_PER_1K
+            output_cost = (output_tokens / 1000) * OUTPUT_TOKEN_COST_PER_1K
         return input_cost + output_cost

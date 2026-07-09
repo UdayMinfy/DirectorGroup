@@ -9,8 +9,10 @@ from config import (
     DEFAULT_DAILY_TOKEN_LIMIT,
     DEFAULT_MONTHLY_TOKEN_LIMIT,
     DYNAMODB_REGION,
-    MODEL_INPUT_COST_PER_1K,
-    MODEL_OUTPUT_COST_PER_1K,
+    CLAUDE_INPUT_TOKEN_COST_PER_1K,
+    CLAUDE_OUTPUT_TOKEN_COST_PER_1K,
+    NOVA_INPUT_TOKEN_COST_PER_1K,
+    NOVA_OUTPUT_TOKEN_COST_PER_1K,
     REQUEST_TOKEN_PRECHECK,
     TOKEN_BUDGETS_TABLE,
 )
@@ -75,11 +77,11 @@ class TokenBudgetService:
 
         return self._build_budget_view(item, daily_limit, monthly_limit)
 
-    def track_usage(self, user_email, input_tokens, output_tokens):
+    def track_usage(self, user_email, input_tokens, output_tokens, model_type="claude"):
         input_tokens = int(input_tokens or 0)
         output_tokens = int(output_tokens or 0)
         total_tokens = input_tokens + output_tokens
-        cost_delta = self._calculate_cost(input_tokens, output_tokens)
+        cost_delta = self._calculate_cost(input_tokens, output_tokens, model_type)
         now = datetime.now(timezone.utc).isoformat()
 
         update_expression = (
@@ -140,7 +142,12 @@ class TokenBudgetService:
         }
 
     @staticmethod
-    def _calculate_cost(input_tokens, output_tokens):
-        input_cost = Decimal(str(MODEL_INPUT_COST_PER_1K)) * Decimal(input_tokens) / Decimal(1000)
-        output_cost = Decimal(str(MODEL_OUTPUT_COST_PER_1K)) * Decimal(output_tokens) / Decimal(1000)
+    def _calculate_cost(input_tokens, output_tokens, model_type="claude"):
+        if model_type.lower() == "nova":
+            input_cost = Decimal(str(NOVA_INPUT_TOKEN_COST_PER_1K)) * Decimal(input_tokens) / Decimal(1000)
+            output_cost = Decimal(str(NOVA_OUTPUT_TOKEN_COST_PER_1K)) * Decimal(output_tokens) / Decimal(1000)
+        else:
+            # Default to Claude pricing
+            input_cost = Decimal(str(CLAUDE_INPUT_TOKEN_COST_PER_1K)) * Decimal(input_tokens) / Decimal(1000)
+            output_cost = Decimal(str(CLAUDE_OUTPUT_TOKEN_COST_PER_1K)) * Decimal(output_tokens) / Decimal(1000)
         return input_cost + output_cost
